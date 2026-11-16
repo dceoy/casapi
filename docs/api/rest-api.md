@@ -11,6 +11,13 @@ informational only and cannot be sent back: request bodies with unknown fields
 (such as `resume` or `session_id`) are rejected with `422`. To continue work,
 include the needed context in the next prompt.
 
+Runs are hermetic. CLI session persistence is disabled, so the CLI writes no
+resumable transcript, and host and project settings are not loaded
+(`setting_sources` is empty): hooks, MCP servers, and permission rules from
+the host's or the workspace's `.claude/settings.json` never enter a run. What
+persists after a run is only what the agent itself writes — files in the
+workspace and ordinary CLI bookkeeping under `~/.claude`.
+
 ## `GET /health`
 
 No authentication.
@@ -55,10 +62,19 @@ Request (only `prompt` is required):
 ```
 
 - `cwd`: relative to `CASAPI_WORKSPACE_ROOT`, or absolute inside it.
+- `system_prompt`: when omitted, the run uses the Claude Code preset system
+  prompt. Send a string to replace it.
+- `allowed_tools`: an auto-approve list, not a restriction. It names tools the
+  run may use without a permission decision; it does not remove other tools,
+  and file edits are still approved under `acceptEdits`. When omitted, the
+  server default (`CASAPI_ALLOWED_TOOLS`) applies — a default, not a ceiling.
 - `permission_mode`: `default`, `acceptEdits`, `plan`, `bypassPermissions`
   (requires server opt-in), `dontAsk`, `auto`.
 - `max_turns`: 1–1000. `max_budget_usd` and `timeout_seconds` must be > 0;
   `timeout_seconds` may not exceed `CASAPI_MAX_TIMEOUT_SECONDS`.
+
+If the client disconnects, the run is **not** cancelled: it continues until
+it finishes or times out, and its concurrency slot stays occupied.
 
 Response:
 
@@ -139,6 +155,14 @@ stream ends:
 ```text
 data: {"type": "error", "detail": "agent run timed out"}
 ```
+
+Treat a run as successful only when a `result` event arrives. A stream that
+ends without one — including a run whose message stream stops early — closes
+with an `error` event instead. There is no heartbeat: during a long tool
+call nothing is sent, so a proxy with an idle timeout (nginx defaults to
+60 s) can cut the connection on either endpoint; the run itself is
+unaffected on `/v1/query` and cancelled on this endpoint. Disconnecting
+from this endpoint cancels the run and releases its slot.
 
 ## Errors
 

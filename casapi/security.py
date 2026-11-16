@@ -23,14 +23,15 @@ def require_auth(settings: Settings, authorization: str | None) -> None:
         HTTPException: 503 if no key is configured and unauthenticated access is
             not allowed; 401 if the supplied credentials are wrong.
     """
-    if settings.api_key is None:
+    key = settings.api_key.strip() if settings.api_key else None
+    if not key:
         if settings.allow_unauthenticated:
             return
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             "agent execution disabled: CASAPI_API_KEY is not configured",
         )
-    expected = f"Bearer {settings.api_key}"
+    expected = f"Bearer {key}"
     if authorization is None or not secrets.compare_digest(
         authorization.encode(), expected.encode()
     ):
@@ -73,12 +74,18 @@ def resolve_cwd(settings: Settings, cwd: str | None) -> Path:
     else:
         path = Path(cwd)
         candidate = path if path.is_absolute() else base / path
-    resolved = candidate.resolve()
+    try:
+        resolved = candidate.resolve()
+        is_dir = resolved.is_dir()
+    except (ValueError, OSError, RuntimeError) as exc:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "cwd is not a valid path"
+        ) from exc
     if not resolved.is_relative_to(base):
         raise HTTPException(
             status.HTTP_403_FORBIDDEN, "cwd is outside the workspace root"
         )
-    if not resolved.is_dir():
+    if not is_dir:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST, "cwd does not exist or is not a directory"
         )

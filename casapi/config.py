@@ -17,6 +17,13 @@ def _env_bool(name: str, *, default: bool = False) -> bool:
     return raw.strip().lower() in _TRUE_VALUES
 
 
+def _env_api_key() -> str | None:
+    raw = os.environ.get("CASAPI_API_KEY")
+    if raw is None:
+        return None
+    return raw.strip() or None
+
+
 @dataclass(frozen=True)
 class Settings:
     """Server configuration.
@@ -52,7 +59,7 @@ class Settings:
         """
         tools = os.environ.get("CASAPI_ALLOWED_TOOLS", _DEFAULT_TOOLS)
         return cls(
-            api_key=os.environ.get("CASAPI_API_KEY"),
+            api_key=_env_api_key(),
             allow_unauthenticated=_env_bool("CASAPI_ALLOW_UNAUTHENTICATED"),
             workspace_root=Path(
                 os.environ.get("CASAPI_WORKSPACE_ROOT", str(Path.cwd()))

@@ -211,11 +211,21 @@ def build_options(
             if request.allowed_tools is not None
             else list(settings.allowed_tools)
         ),
+        # Stateless and hermetic runs: the CLI must not persist a resumable
+        # session transcript, and host/project settings (hooks, MCP servers,
+        # permission rules) must not leak into runs. A request's system
+        # prompt replaces the Claude Code preset; it never adds sources.
+        "setting_sources": [],
+        "extra_args": {"no-session-persistence": None},
+        "system_prompt": (
+            request.system_prompt
+            if request.system_prompt is not None
+            else {"type": "preset", "preset": "claude_code"}
+        ),
     }
     model = request.model or settings.default_model
     optional: dict[str, Any] = {
         "model": model,
-        "system_prompt": request.system_prompt,
         "disallowed_tools": request.disallowed_tools,
         "max_turns": request.max_turns,
         "max_budget_usd": request.max_budget_usd,

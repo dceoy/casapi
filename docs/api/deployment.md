@@ -35,6 +35,11 @@ CASAPI_ALLOW_UNAUTHENTICATED=true uv run uvicorn casapi.main:app --host 127.0.0.
 
 5. Run it as an unprivileged user that owns only the workspace directory.
    Workspace confinement limits the starting `cwd`, not what `Bash` can reach.
+   The agent inherits this environment file, so a run can read
+   `CASAPI_API_KEY` and `ANTHROPIC_API_KEY` from its own environment — the
+   API key is effectively a shell as this user (see the README security
+   model). The concurrency limit is per process: running uvicorn with
+   `--workers N` multiplies `CASAPI_MAX_CONCURRENCY` by N.
 
 ### systemd unit
 

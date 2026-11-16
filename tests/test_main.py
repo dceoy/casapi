@@ -8,6 +8,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
+import httpx
 import pytest
 from claude_agent_sdk import (
     AssistantMessage,
@@ -212,6 +213,11 @@ def test_auth_matrix(tmp_path: Path) -> None:
     assert client.post("/v1/query", json={"prompt": "x"}).status_code == 503
     assert client.get("/v1/info").status_code == 503
 
+    for blank in ("", "   "):
+        settings = replace(make_settings(tmp_path), api_key=blank)
+        client, _ = client_for(settings)
+        assert client.post("/v1/query", json={"prompt": "x"}).status_code == 503
+
     open_settings = make_settings(tmp_path, api_key=None, allow_unauthenticated=True)
     client, _ = client_for(open_settings)
     assert client.post("/v1/query", json={"prompt": "x"}).status_code == 200
@@ -246,6 +252,28 @@ def test_cwd(tmp_path: Path) -> None:
     assert runner.options is not None
     assert runner.options.cwd == str((tmp_path / "sub").resolve())
     assert post(str(tmp_path / "sub")) == 200
+
+
+def test_cwd_symlinks_and_malformed(tmp_path: Path) -> None:
+    """Verify symlink confinement and malformed path handling."""
+    (tmp_path / "inner").mkdir()
+    outside = tmp_path.parent / (tmp_path.name + "-outside")
+    outside.mkdir()
+    (tmp_path / "escape").symlink_to(outside, target_is_directory=True)
+    (tmp_path / "alias").symlink_to(tmp_path / "inner", target_is_directory=True)
+    (tmp_path / "loop-a").symlink_to(tmp_path / "loop-b")
+    (tmp_path / "loop-b").symlink_to(tmp_path / "loop-a")
+    client, _ = client_for(make_settings(tmp_path))
+
+    def post(cwd: str) -> int:
+        return client.post(
+            "/v1/query", json={"prompt": "x", "cwd": cwd}, headers=AUTH
+        ).status_code
+
+    assert post("escape") == 403
+    assert post("alias") == 200
+    assert post("loop-a") == 400
+    assert post("bad\0path") == 400
 
 
 def test_bypass_permissions(tmp_path: Path) -> None:
@@ -369,6 +397,70 @@ def test_stream_errors(tmp_path: Path) -> None:
     assert client.post("/v1/query/stream", json={"prompt": "x"}).status_code == 401
 
 
+def test_stream_without_result(tmp_path: Path) -> None:
+    """Verify a stream ending without a result emits an error event."""
+    client, _ = client_for(make_settings(tmp_path), FakeRunner(canned()[:1]))
+    response = client.post("/v1/query/stream", json={"prompt": "x"}, headers=AUTH)
+    events = parse_sse(response.text)
+    assert [e["type"] for e in events] == ["system", "error"]
+    assert "without a result" in events[-1]["detail"]
+
+
+def test_stream_releases_slot(tmp_path: Path) -> None:
+    """Verify a finished stream releases its concurrency slot."""
+    client, _ = client_for(make_settings(tmp_path, max_concurrency=1))
+    for _ in range(2):
+        response = client.post("/v1/query/stream", json={"prompt": "x"}, headers=AUTH)
+        assert response.status_code == 200
+
+
+class BlockingRunner:
+    """Runner that blocks mid-stream until released."""
+
+    def __init__(self) -> None:
+        """Initialize the events and capture slot."""
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.options: ClaudeAgentOptions | None = None
+
+    async def stream(
+        self, prompt: str, options: ClaudeAgentOptions
+    ) -> AsyncIterator[Message]:
+        """Yield one message, block, then yield the result.
+
+        Args:
+            prompt: Ignored beyond a non-empty check.
+            options: Captured for completeness.
+
+        Yields:
+            The first and last canned messages.
+        """
+        assert prompt
+        self.options = options
+        messages = canned()
+        yield messages[0]
+        self.started.set()
+        await self.release.wait()
+        yield messages[-1]
+
+
+@pytest.mark.asyncio
+async def test_concurrency_in_flight(tmp_path: Path) -> None:
+    """Verify a second request gets 429 while a run holds the only slot."""
+    runner = BlockingRunner()
+    test_app = create_app(make_settings(tmp_path, max_concurrency=1), runner)
+    transport = httpx.ASGITransport(app=test_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        first = asyncio.create_task(
+            client.post("/v1/query", json={"prompt": "x"}, headers=AUTH)
+        )
+        await runner.started.wait()
+        second = await client.post("/v1/query", json={"prompt": "x"}, headers=AUTH)
+        assert second.status_code == 429
+        runner.release.set()
+        assert (await first).status_code == 200
+
+
 def test_info(tmp_path: Path) -> None:
     """Verify the info endpoint."""
     client, _ = client_for(make_settings(tmp_path, default_model="m1"))
@@ -435,6 +527,18 @@ def test_settings_from_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
     assert settings.max_timeout_seconds == pytest.approx(12.5)
 
 
+def test_settings_api_key_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify an empty or blank CASAPI_API_KEY counts as unconfigured."""
+    monkeypatch.setenv("CASAPI_API_KEY", "")
+    assert Settings.from_env().api_key is None
+    monkeypatch.setenv("CASAPI_API_KEY", "   ")
+    assert Settings.from_env().api_key is None
+    monkeypatch.setenv("CASAPI_API_KEY", "  secret  ")
+    assert Settings.from_env().api_key == "secret"
+    monkeypatch.delenv("CASAPI_API_KEY")
+    assert Settings.from_env().api_key is None
+
+
 def test_build_options(tmp_path: Path) -> None:
     """Verify defaults versus overrides."""
     settings = make_settings(tmp_path, default_model="dm")
@@ -443,7 +547,9 @@ def test_build_options(tmp_path: Path) -> None:
     assert options.permission_mode == "acceptEdits"
     assert options.allowed_tools == ["Read", "Write", "Edit", "Bash", "Glob", "Grep"]
     assert options.cwd == str(tmp_path)
-    assert options.system_prompt is None
+    assert options.system_prompt == {"type": "preset", "preset": "claude_code"}
+    assert options.setting_sources == []
+    assert options.extra_args == {"no-session-persistence": None}
     assert options.max_turns is None
     assert options.resume is None
     assert options.continue_conversation is False

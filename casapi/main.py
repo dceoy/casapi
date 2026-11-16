@@ -6,6 +6,7 @@ import asyncio
 import json
 from typing import TYPE_CHECKING
 
+from claude_agent_sdk import ResultMessage
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 
@@ -86,6 +87,31 @@ async def _next_message(
         return await asyncio.wait_for(anext(stream), max(remaining, 0.0))
     except StopAsyncIteration:
         return None
+
+
+async def _stream_events(
+    stream: AsyncIterator[Message], deadline: float
+) -> AsyncIterator[str]:
+    """Serialize stream messages as SSE events.
+
+    Args:
+        stream: SDK message stream.
+        deadline: Monotonic time by which the run must finish.
+
+    Yields:
+        One SSE event per message. A stream that ends without a result
+        message yields a final error event instead of closing silently.
+    """
+    seen_result = False
+    while True:
+        message = await _next_message(stream, deadline)
+        if message is None:
+            break
+        if isinstance(message, ResultMessage):
+            seen_result = True
+        yield f"data: {json.dumps(message_to_dict(message))}\n\n"
+    if not seen_result:
+        yield _error_event("agent stream ended without a result message")
 
 
 def _add_meta_routes(app: FastAPI, settings: Settings) -> None:
@@ -176,11 +202,8 @@ def _add_query_routes(app: FastAPI) -> None:
             stream = agent_runner.stream(body.prompt, options)
             deadline = asyncio.get_running_loop().time() + timeout
             try:
-                while True:
-                    message = await _next_message(stream, deadline)
-                    if message is None:
-                        break
-                    yield f"data: {json.dumps(message_to_dict(message))}\n\n"
+                async for event in _stream_events(stream, deadline):
+                    yield event
             except TimeoutError:
                 yield _error_event("agent run timed out")
             except Exception as exc:  # ruff: ignore[blind-except]
