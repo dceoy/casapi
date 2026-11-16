@@ -2,7 +2,7 @@
 
 from fastapi.testclient import TestClient
 
-from claudeagentapi.main import app
+from casapi.main import app
 
 
 def test_health() -> None:

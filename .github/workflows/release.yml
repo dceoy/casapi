@@ -14,7 +14,7 @@ defaults:
 jobs:
   prepare:
     if: >-
-      github.repository == 'dceoy/claude-agent-api'
+      github.repository == 'dceoy/casapi'
       && github.ref == 'refs/heads/main'
     permissions:
       actions: read

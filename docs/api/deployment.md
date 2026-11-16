@@ -4,7 +4,7 @@ For local development, run the API on loopback:
 
 ```sh
 uv sync
-uv run uvicorn claudeagentapi.main:app --host 127.0.0.1 --port 8000
+uv run uvicorn casapi.main:app --host 127.0.0.1 --port 8000
 ```
 
 For remote deployments, configure TLS, authentication, rate limits,

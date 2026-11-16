@@ -1,9 +1,9 @@
-"""FastAPI application for the Claude Agent API scaffold."""
+"""FastAPI application for the casapi scaffold."""
 
 from fastapi import FastAPI
 
 app = FastAPI(
-    title="Claude Agent API",
+    title="casapi",
     description="Stateless HTTP API for remote Claude Code execution.",
     version="0.1.0",
 )
