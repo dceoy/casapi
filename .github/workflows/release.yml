@@ -1,0 +1,23 @@
+---
+name: Release
+on:
+  workflow_dispatch:  # checkov:skip=CKV_GHA_7:manual GitHub-only release
+permissions:
+  contents: read
+concurrency:
+  group: python-release-${{ github.repository }}
+  cancel-in-progress: false
+jobs:
+  release:
+    if: >
+      github.repository == 'dceoy/claude-agent-api'
+      && github.ref == 'refs/heads/main'
+    permissions:
+      actions: read
+      contents: write
+      id-token: write
+    uses: dceoy/gha-for-devops/.github/workflows/python-package-release-on-pypi-and-github.yml@593cca8cdc86cc7c579d8bbf48f2d8b223b71121
+    with:
+      mode: github-only
+      package-path: .
+      publish-to-pypi: false

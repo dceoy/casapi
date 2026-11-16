@@ -1,0 +1,60 @@
+---
+name: CI
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+permissions:
+  contents: read
+jobs:
+  python-qa:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+        with:
+          version: latest
+          enable-cache: true
+      - name: Install dependencies
+        run: uv sync --all-groups
+      - name: Ruff lint
+        run: uv run ruff check .
+      - name: Ruff format
+        run: uv run ruff format --check .
+      - name: Pyright
+        run: uv run pyright .
+      - name: Pytest
+        run: uv run pytest
+  source-security-scan:
+    permissions:
+      contents: read
+    uses: dceoy/gha-for-devops/.github/workflows/source-security-scan.yml@593cca8cdc86cc7c579d8bbf48f2d8b223b71121
+    with:
+      use-semgrep: true
+      semgrep-includes: |
+        *.py
+  dependabot-auto-merge:
+    if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'dependabot[bot]'
+    needs:
+      - python-qa
+      - source-security-scan
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: read
+      checks: read
+      statuses: read
+    uses: dceoy/gha-for-devops/.github/workflows/dependabot-auto-merge.yml@593cca8cdc86cc7c579d8bbf48f2d8b223b71121
+    with:
+      unconditional: true
