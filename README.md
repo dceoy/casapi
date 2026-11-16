@@ -19,7 +19,7 @@ Requirements: Python 3.11–3.14 and [uv](https://docs.astral.sh/uv/).
 git clone https://github.com/dceoy/claude-agent-api.git
 cd claude-agent-api
 uv sync
-uv run uvicorn claude_agent_api.main:app --host 127.0.0.1 --port 8000
+uv run uvicorn claudeagentapi.main:app --host 127.0.0.1 --port 8000
 ```
 
 Check the service at `http://127.0.0.1:8000/health` and Swagger UI at
@@ -30,6 +30,7 @@ uv run ruff format --check .
 uv run ruff check .
 uv run pyright .
 uv run pytest
+uv run mkdocs build --strict
 ```
 
 Generate and commit `uv.lock` with `uv lock` in a network-enabled environment
@@ -45,4 +46,4 @@ before treating dependencies as reproducibly pinned.
 
 ## License
 
-MIT License. See [LICENSE](LICENSE).
+AGPL-3.0-only. See [LICENSE](LICENSE).

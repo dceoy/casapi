@@ -6,19 +6,28 @@ on:
       - main
     paths:
       - '.github/workflows/**'
+      - '.github/actions/**'
+      - '**/action.yml'
+      - '**/action.yaml'
       - '**/*.py'
       - '**/*.pyi'
       - '**/pyproject.toml'
       - '**/uv.lock'
+      - '**/requirements*.txt'
   pull_request:
     branches:
       - main
     paths:
       - '.github/workflows/**'
+      - '.github/actions/**'
+      - '**/action.yml'
+      - '**/action.yaml'
       - '**/*.py'
       - '**/*.pyi'
       - '**/pyproject.toml'
       - '**/uv.lock'
+      - '**/requirements*.txt'
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
@@ -27,7 +36,7 @@ jobs:
       contents: read
       security-events: write
       actions: read
-    uses: dceoy/gha-for-devops/.github/workflows/github-codeql-analysis.yml@593cca8cdc86cc7c579d8bbf48f2d8b223b71121
+    uses: dceoy/gha-for-devops/.github/workflows/github-codeql-analysis.yml@9e394d7c18b3a00fb853cd3c693cc4eeb5f0c825  # v2.3.0
     with:
       language: >
         ["actions","python"]

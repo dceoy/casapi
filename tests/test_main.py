@@ -2,10 +2,11 @@
 
 from fastapi.testclient import TestClient
 
-from claude_agent_api.main import app
+from claudeagentapi.main import app
 
 
 def test_health() -> None:
+    """Verify the public health endpoint."""
     with TestClient(app) as client:
         response = client.get("/health")
     assert response.status_code == 200
