@@ -1,11 +1,16 @@
 # casapi
 
-Stateless HTTP API scaffold for remote Claude Code execution.
+Stateless HTTP API for remote Claude Code execution powered by Claude Agent SDK.
 
-## Current capabilities
+## Capabilities
 
-The application exposes FastAPI OpenAPI documentation and `GET /health`.
-No agent execution, credentials, or session-resume endpoints are implemented.
+- `POST /v1/query`: run one ephemeral agent query and receive the result and
+  full message transcript as JSON.
+- `POST /v1/query/stream`: the same run streamed as Server-Sent Events.
+- `GET /v1/info` and `GET /health`.
+- Bearer-token authentication, workspace confinement, opt-in
+  `bypassPermissions`, concurrency and timeout limits.
+- No sessions, resume, or server-side conversation state.
 
 ## Development
 
