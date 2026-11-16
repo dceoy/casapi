@@ -273,7 +273,7 @@ wheels = [
 ]
 
 [[package]]
-name = "claude-agent-api"
+name = "casapi"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

@@ -1,4 +1,4 @@
-# Claude Agent API
+# casapi
 
 Stateless HTTP API scaffold for remote Claude Code execution.
 
@@ -11,7 +11,7 @@ No agent execution, credentials, or session-resume endpoints are implemented.
 
 ```sh
 uv sync
-uv run uvicorn claudeagentapi.main:app --host 127.0.0.1 --port 8000
+uv run uvicorn casapi.main:app --host 127.0.0.1 --port 8000
 ```
 
 - [API reference](api/index.md)

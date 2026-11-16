@@ -1,5 +1,5 @@
 [project]
-name = "claude-agent-api"
+name = "casapi"
 version = "0.1.0"
 description = "Stateless HTTP API for remote Claude Code execution powered by Claude Agent SDK"
 authors = [{name = "dceoy", email = "dceoy@users.noreply.github.com"}]
@@ -26,7 +26,7 @@ classifiers = [
 ]
 
 [project.urls]
-Repository = "https://github.com/dceoy/claude-agent-api.git"
+Repository = "https://github.com/dceoy/casapi.git"
 
 [tool.uv]
 exclude-newer = "1 day"
@@ -46,10 +46,10 @@ dev = [
 ]
 
 [tool.hatch.build.targets.sdist]
-only-include = ["claudeagentapi", "LICENSE", "README.md", "pyproject.toml"]
+only-include = ["casapi", "LICENSE", "README.md", "pyproject.toml"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["claudeagentapi"]
+packages = ["casapi"]
 
 [tool.ruff]
 line-length = 88
@@ -95,7 +95,7 @@ reportMissingTypeStubs = "none"
 
 [tool.pytest.ini_options]
 addopts = [
-  "--cov=claudeagentapi",
+  "--cov=casapi",
   "--cov-branch",
   "--doctest-modules",
   "--capture=no",
@@ -108,7 +108,7 @@ python_functions = ["test_*"]
 minversion = "6.0"
 
 [tool.coverage.run]
-source = ["claudeagentapi"]
+source = ["casapi"]
 omit = [
   "**/__init__.py",
   "tests/**",

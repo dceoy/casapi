@@ -1,8 +1,8 @@
-# claude-agent-api
+# casapi
 
 Stateless HTTP API for remote Claude Code execution powered by Claude Agent SDK.
 
-[![CI](https://github.com/dceoy/claude-agent-api/actions/workflows/ci.yml/badge.svg)](https://github.com/dceoy/claude-agent-api/actions/workflows/ci.yml)
+[![CI](https://github.com/dceoy/casapi/actions/workflows/ci.yml/badge.svg)](https://github.com/dceoy/casapi/actions/workflows/ci.yml)
 
 ## Status
 
@@ -16,10 +16,10 @@ execution endpoint, session management, or credential handling is implemented ye
 Requirements: Python 3.11–3.14 and [uv](https://docs.astral.sh/uv/).
 
 ```sh
-git clone https://github.com/dceoy/claude-agent-api.git
-cd claude-agent-api
+git clone https://github.com/dceoy/casapi.git
+cd casapi
 uv sync
-uv run uvicorn claudeagentapi.main:app --host 127.0.0.1 --port 8000
+uv run uvicorn casapi.main:app --host 127.0.0.1 --port 8000
 ```
 
 Check the service at `http://127.0.0.1:8000/health` and Swagger UI at

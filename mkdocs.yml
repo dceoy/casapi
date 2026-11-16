@@ -1,10 +1,10 @@
-site_name: claude-agent-api API Documentation
-site_description: Stateless Claude Agent API using FastAPI
+site_name: casapi Documentation
+site_description: Stateless casapi using FastAPI
 site_author: dceoy
-site_url: https://github.com/dceoy/claude-agent-api
+site_url: https://github.com/dceoy/casapi
 
-repo_name: dceoy/claude-agent-api
-repo_url: https://github.com/dceoy/claude-agent-api
+repo_name: dceoy/casapi
+repo_url: https://github.com/dceoy/casapi
 
 theme:
   name: material
