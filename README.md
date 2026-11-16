@@ -33,8 +33,7 @@ uv run pytest
 uv run mkdocs build --strict
 ```
 
-Generate and commit `uv.lock` with `uv lock` in a network-enabled environment
-before treating dependencies as reproducibly pinned.
+Dependency versions are tracked in the committed `uv.lock`.
 
 ## Design constraints
 
