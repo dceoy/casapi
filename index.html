@@ -4,11 +4,11 @@
         <meta charset="utf-8">
         <meta http-equiv="X-UA-Compatible" content="IE=edge">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <meta name="description" content="Stateless Claude Agent API using FastAPI">
+        <meta name="description" content="Stateless casapi using FastAPI">
         <meta name="author" content="dceoy">
-        <link rel="canonical" href="https://github.com/dceoy/claude-agent-api/">
+        <link rel="canonical" href="https://github.com/dceoy/casapi/">
         <link rel="shortcut icon" href="img/favicon.ico">
-        <title>claude-agent-api API Documentation</title>
+        <title>casapi Documentation</title>
         <link href="css/bootstrap.min.css" rel="stylesheet">
         <link href="css/fontawesome.min.css" rel="stylesheet">
         <link href="css/brands.min.css" rel="stylesheet">
@@ -25,7 +25,7 @@
     <body class="homepage">
         <div class="navbar fixed-top navbar-expand-lg navbar-dark bg-primary">
             <div class="container">
-                <a class="navbar-brand" href=".">claude-agent-api API Documentation</a>
+                <a class="navbar-brand" href=".">casapi Documentation</a>
                 <!-- Expander button -->
                 <button type="button" class="navbar-toggler" data-bs-toggle="collapse" data-bs-target="#navbar-collapse" aria-controls="navbar-collapse" aria-expanded="false" aria-label="Toggle navigation">
                     <span class="navbar-toggler-icon"></span>
@@ -74,7 +74,7 @@
                                 </a>
                             </li>
                             <li class="nav-item">
-                                <a href="https://github.com/dceoy/claude-agent-api/edit/master/docs/index.md" class="nav-link">Edit on dceoy/claude-agent-api
+                                <a href="https://github.com/dceoy/casapi/edit/master/docs/index.md" class="nav-link">Edit on dceoy/casapi
                                     </a>
                             </li>
                     </ul>
@@ -95,7 +95,7 @@
     <div id="toc-collapse" class="navbar-collapse collapse card bg-body-tertiary">
         <ul class="nav flex-column">
             
-            <li class="nav-item" data-bs-level="1"><a href="#claude-agent-api" class="nav-link">Claude Agent API</a>
+            <li class="nav-item" data-bs-level="1"><a href="#casapi" class="nav-link">casapi</a>
               <ul class="nav flex-column">
             <li class="nav-item" data-bs-level="2"><a href="#current-capabilities" class="nav-link">Current capabilities</a>
               <ul class="nav flex-column">
@@ -112,14 +112,14 @@
 </div></div>
                     <div class="col-md-9" role="main">
 
-<h1 id="claude-agent-api">Claude Agent API<a class="headerlink" href="#claude-agent-api" title="Permanent link">&para;</a></h1>
+<h1 id="casapi">casapi<a class="headerlink" href="#casapi" title="Permanent link">&para;</a></h1>
 <p>Stateless HTTP API scaffold for remote Claude Code execution.</p>
 <h2 id="current-capabilities">Current capabilities<a class="headerlink" href="#current-capabilities" title="Permanent link">&para;</a></h2>
 <p>The application exposes FastAPI OpenAPI documentation and <code>GET /health</code>.
 No agent execution, credentials, or session-resume endpoints are implemented.</p>
 <h2 id="development">Development<a class="headerlink" href="#development" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>uv<span class="w"> </span>sync
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>uv<span class="w"> </span>run<span class="w"> </span>uvicorn<span class="w"> </span>claudeagentapi.main:app<span class="w"> </span>--host<span class="w"> </span><span class="m">127</span>.0.0.1<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>uv<span class="w"> </span>run<span class="w"> </span>uvicorn<span class="w"> </span>casapi.main:app<span class="w"> </span>--host<span class="w"> </span><span class="m">127</span>.0.0.1<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
 </code></pre></div>
 <ul>
 <li><a href="api/">API reference</a></li>
@@ -207,5 +207,5 @@ No agent execution, credentials, or session-resume endpoints are implemented.</p
 
 <!--
 MkDocs version : 1.6.1
-Build Date UTC : 2026-11-16 14:49:31.977171+00:00
+Build Date UTC : 2026-11-16 15:33:05.298719+00:00
 -->
