@@ -11,5 +11,9 @@ app = FastAPI(
 
 @app.get("/health")
 async def health() -> dict[str, str]:
-    """Report API process readiness."""
+    """Report API process readiness.
+
+    Returns:
+        Status for the running HTTP server.
+    """
     return {"status": "ok"}
