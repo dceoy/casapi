@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import json
+from contextlib import suppress
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -869,4 +871,54 @@ async def test_asgi_disconnect_waits_for_cleanup(
     await asyncio.wait_for(test_app(scope, receive, send), 1)
     assert first_event.is_set()
     assert runner.closed
+    assert not test_app.state.semaphore.locked()
+
+
+@pytest.mark.asyncio
+async def test_asgi_cancel_inside_send_cleans_up(tmp_path: Path) -> None:
+    """Close an abandoned response and release its capacity promptly."""
+    runner = CleanupRunner()
+    test_app = create_app(make_settings(tmp_path, max_concurrency=1), runner)
+    request_sent = False
+
+    async def receive() -> dict[str, Any]:
+        nonlocal request_sent
+        if not request_sent:
+            request_sent = True
+            return {
+                "type": "http.request",
+                "body": b'{"prompt":"x"}',
+                "more_body": False,
+            }
+        await asyncio.Event().wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message: MutableMapping[str, Any]) -> None:
+        if message["type"] == "http.response.body" and message.get("body"):
+            cast("asyncio.Task[object]", asyncio.current_task()).cancel()
+            await asyncio.sleep(0)
+
+    scope: dict[str, Any] = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/v1/query/stream",
+        "raw_path": b"/v1/query/stream",
+        "query_string": b"",
+        "headers": [
+            (b"authorization", b"Bearer secret"),
+            (b"content-type", b"application/json"),
+        ],
+        "server": ("testserver", 80),
+        "client": ("testclient", 1234),
+    }
+    task = asyncio.create_task(test_app(scope, receive, send))
+    with suppress(asyncio.CancelledError):
+        await task
+    assert runner.closed.is_set()
+    del task
+    gc.collect()
+    await asyncio.wait_for(runner.closed.wait(), 2)
     assert not test_app.state.semaphore.locked()

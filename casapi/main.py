@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, AsyncIterator
 
     from claude_agent_sdk import ClaudeAgentOptions, Message
+    from starlette.types import Receive, Scope, Send
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +150,18 @@ async def _events(
             semaphore.release()
 
 
+class _ClosingStreamingResponse(StreamingResponse):
+    """Close the event generator even when sending the response is cancelled."""
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Run the response and await generator cleanup on every exit."""
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            with anyio.CancelScope(shield=True):
+                await cast("AsyncGenerator[str]", self.body_iterator).aclose()
+
+
 def _add_meta_routes(app: FastAPI, settings: Settings) -> None:
     """Register the health and info routes."""
 
@@ -234,7 +247,7 @@ def _add_query_routes(app: FastAPI) -> None:
         options, timeout, semaphore = await _prepare(request, body)
         agent_runner: AgentRunner = request.app.state.runner
 
-        return StreamingResponse(
+        return _ClosingStreamingResponse(
             _events(agent_runner, body.prompt, options, timeout, semaphore),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},

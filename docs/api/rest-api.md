@@ -165,7 +165,9 @@ call nothing is sent, so a proxy with an idle timeout (nginx defaults to
 60 s) can cut the connection on either endpoint; the run itself is
 unaffected on `/v1/query` and cancelled on this endpoint. Disconnecting
 from this endpoint cancels the run and releases its slot. The run deadline also
-cancels the run and releases its slot if the client stops reading.
+cancels the run and releases its slot if the client stops reading. If a stream
+response is abandoned, its cleanup is deterministic and is bounded in the worst
+case by the run timeout.
 
 ## Errors
 
