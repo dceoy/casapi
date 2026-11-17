@@ -97,7 +97,7 @@
             
             <li class="nav-item" data-bs-level="1"><a href="#casapi" class="nav-link">casapi</a>
               <ul class="nav flex-column">
-            <li class="nav-item" data-bs-level="2"><a href="#current-capabilities" class="nav-link">Current capabilities</a>
+            <li class="nav-item" data-bs-level="2"><a href="#capabilities" class="nav-link">Capabilities</a>
               <ul class="nav flex-column">
               </ul>
             </li>
@@ -113,10 +113,17 @@
                     <div class="col-md-9" role="main">
 
 <h1 id="casapi">casapi<a class="headerlink" href="#casapi" title="Permanent link">&para;</a></h1>
-<p>Stateless HTTP API scaffold for remote Claude Code execution.</p>
-<h2 id="current-capabilities">Current capabilities<a class="headerlink" href="#current-capabilities" title="Permanent link">&para;</a></h2>
-<p>The application exposes FastAPI OpenAPI documentation and <code>GET /health</code>.
-No agent execution, credentials, or session-resume endpoints are implemented.</p>
+<p>Stateless HTTP API for remote Claude Code execution powered by Claude Agent SDK.</p>
+<h2 id="capabilities">Capabilities<a class="headerlink" href="#capabilities" title="Permanent link">&para;</a></h2>
+<ul>
+<li><code>POST /v1/query</code>: run one ephemeral agent query and receive the result and
+  full message transcript as JSON.</li>
+<li><code>POST /v1/query/stream</code>: the same run streamed as Server-Sent Events.</li>
+<li><code>GET /v1/info</code> and <code>GET /health</code>.</li>
+<li>Bearer-token authentication, workspace confinement, opt-in
+  <code>bypassPermissions</code>, concurrency and timeout limits.</li>
+<li>No sessions, resume, or server-side conversation state.</li>
+</ul>
 <h2 id="development">Development<a class="headerlink" href="#development" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>uv<span class="w"> </span>sync
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>uv<span class="w"> </span>run<span class="w"> </span>uvicorn<span class="w"> </span>casapi.main:app<span class="w"> </span>--host<span class="w"> </span><span class="m">127</span>.0.0.1<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
@@ -207,5 +214,5 @@ No agent execution, credentials, or session-resume endpoints are implemented.</p
 
 <!--
 MkDocs version : 1.6.1
-Build Date UTC : 2026-11-16 15:33:05.298719+00:00
+Build Date UTC : 2026-11-17 13:22:45.873771+00:00
 -->

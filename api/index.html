@@ -105,10 +105,17 @@
                     <div class="col-md-9" role="main">
 
 <h1 id="api-reference">API Reference<a class="headerlink" href="#api-reference" title="Permanent link">&para;</a></h1>
-<p>The initial application defines a single health endpoint.
-Additional endpoints are intentionally excluded from this scaffold.</p>
+<p>casapi exposes a stateless REST API around Claude Agent SDK <code>query()</code>:</p>
 <ul>
-<li><a href="rest-api/">REST API</a></li>
+<li><code>GET /health</code>: readiness probe (no auth).</li>
+<li><code>GET /v1/info</code>: server defaults and limits.</li>
+<li><code>POST /v1/query</code>: one agent run, JSON result with transcript.</li>
+<li>
+<p><code>POST /v1/query/stream</code>: one agent run, streamed as SSE.</p>
+</li>
+<li>
+<p><a href="rest-api/">REST API</a></p>
+</li>
 <li><a href="deployment/">Deployment</a></li>
 </ul></div>
             </div>
