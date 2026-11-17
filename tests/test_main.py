@@ -342,9 +342,9 @@ def test_runner_failures(tmp_path: Path) -> None:
 
     no_result = FakeRunner(canned()[:2])
     client, _ = client_for(settings, no_result)
-    assert (
-        client.post("/v1/query", json={"prompt": "x"}, headers=AUTH).status_code == 502
-    )
+    response = client.post("/v1/query", json={"prompt": "x"}, headers=AUTH)
+    assert response.status_code == 502
+    assert response.json() == {"detail": "agent stream ended without a result message"}
 
     client, _ = client_for(settings, FakeRunner(delay=1.0))
     slow = {"prompt": "x", "timeout_seconds": 0.05}
@@ -922,3 +922,57 @@ async def test_asgi_cancel_inside_send_cleans_up(tmp_path: Path) -> None:
     gc.collect()
     await asyncio.wait_for(runner.closed.wait(), 2)
     assert not test_app.state.semaphore.locked()
+
+
+def test_info_blank_key(tmp_path: Path) -> None:
+    """A directly constructed blank key does not require authentication."""
+    settings = Settings(
+        api_key="   ", allow_unauthenticated=True, workspace_root=tmp_path
+    )
+    client, _ = client_for(settings)
+    response = client.get("/v1/info")
+    assert response.status_code == 200
+    assert response.json()["auth_required"] is False
+
+
+def test_stream_heartbeat(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A silent run sends comments before its first data event."""
+    monkeypatch.setattr("casapi.main.HEARTBEAT_INTERVAL", 0.01)
+    client, _ = client_for(make_settings(tmp_path), FakeRunner(delay=0.05))
+    response = client.post("/v1/query/stream", json={"prompt": "x"}, headers=AUTH)
+    assert response.text.startswith(": heartbeat\n\n")
+    assert parse_sse(response.text)[-1]["type"] == "result"
+
+
+@pytest.mark.asyncio
+async def test_query_disconnect_cancels_and_releases(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A mid-run disconnect closes the runner and allows another query."""
+    monkeypatch.setattr("casapi.main.DISCONNECT_POLL_INTERVAL", 0.01)
+    runner = CleanupRunner()
+    test_app = create_app(make_settings(tmp_path, max_concurrency=1), runner)
+    disconnected = False
+
+    async def receive() -> dict[str, Any]:
+        if disconnected:
+            return {"type": "http.disconnect"}
+        await asyncio.Event().wait()
+        return {"type": "http.disconnect"}
+
+    route = next(
+        r for r in test_app.routes if isinstance(r, APIRoute) and r.path == "/v1/query"
+    )
+    endpoint = cast("Callable[..., Coroutine[Any, Any, Any]]", route.endpoint)
+    request = Request({"type": "http", "app": test_app}, receive)
+    first = asyncio.create_task(endpoint(QueryRequest(prompt="x"), request))
+    await asyncio.wait_for(runner.started.wait(), 1)
+    disconnected = True
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(first, 1)
+    assert runner.closed.is_set()
+    runner.release.set()
+    transport = httpx.ASGITransport(app=test_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post("/v1/query", json={"prompt": "x"}, headers=AUTH)
+    assert response.status_code == 200

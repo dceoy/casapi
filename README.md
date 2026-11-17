@@ -85,9 +85,9 @@ curl -N https://casapi.example.net/v1/query/stream \
 - **`bypassPermissions` is opt-in** via `CASAPI_ALLOW_BYPASS_PERMISSIONS`.
   It is not a meaningful boundary on its own: with `Bash` auto-approved, the
   default posture is already shell-equivalent.
-- **Client disconnects.** `POST /v1/query` does not stop when the client
-  disconnects; the run continues until it finishes or times out. The
-  streaming endpoint stops when its consumer goes away.
+- **Client disconnects.** `POST /v1/query` promptly cancels the run and frees
+  its concurrency slot when the client disconnects. The streaming endpoint
+  also cancels the run when its consumer goes away.
 - **Bind and TLS.** Bind to loopback or a private interface and put TLS in front
   (reverse proxy, Tailscale, or an SSH tunnel). The API key travels in a header.
 - **Statelessness.** Request bodies containing `resume`, `session_id`, or any

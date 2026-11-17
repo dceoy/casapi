@@ -14,6 +14,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 
 from casapi.agent import (
+    AgentExecutionError,
     AgentRunner,
     SdkAgentRunner,
     build_options,
@@ -33,6 +34,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 VERSION = "0.1.0"
+DISCONNECT_POLL_INTERVAL = 0.1
+HEARTBEAT_INTERVAL = 15.0
 
 Auth = Depends(auth_dependency)
 
@@ -98,7 +101,7 @@ async def _stream_events(stream: AsyncIterator[Message]) -> AsyncGenerator[str]:
         yield _error_event("agent stream ended without a result message")
 
 
-async def _events(
+async def _events(  # ruff: ignore[complex-structure]  # pump and consumer share lifecycle
     agent_runner: AgentRunner,
     prompt: str,
     options: ClaudeAgentOptions,
@@ -139,7 +142,14 @@ async def _events(
 
     task = asyncio.create_task(pump())
     try:
-        while (event := await queue.get()) is not None:
+        while True:
+            try:
+                event = await asyncio.wait_for(queue.get(), HEARTBEAT_INTERVAL)
+            except TimeoutError:
+                yield ": heartbeat\n\n"
+                continue
+            if event is None:
+                break
             yield event
     finally:
         closing = True
@@ -189,7 +199,7 @@ def _add_meta_routes(app: FastAPI, settings: Settings) -> None:
             default_permission_mode=settings.permission_mode,
             default_allowed_tools=list(settings.allowed_tools),
             max_concurrency=settings.max_concurrency,
-            auth_required=settings.api_key is not None,
+            auth_required=bool(settings.api_key and settings.api_key.strip()),
         )
 
     _ = (health, info)
@@ -216,20 +226,40 @@ def _add_query_routes(app: FastAPI) -> None:
         """
         options, timeout, semaphore = await _prepare(request, body)
         agent_runner: AgentRunner = request.app.state.runner
+        task = cast("asyncio.Task[object]", asyncio.current_task())
+
+        async def watch_disconnect() -> None:
+            while not await request.is_disconnected():  # ruff: ignore[async-busy-wait]  # ASGI disconnect polling
+                await asyncio.sleep(DISCONNECT_POLL_INTERVAL)
+            logger.info("client disconnected; cancelling agent run")
+            task.cancel()
+
+        watcher = asyncio.create_task(watch_disconnect())
         try:
             async with asyncio.timeout(timeout):
-                return await collect_result(agent_runner.stream(body.prompt, options))
+                stream = agent_runner.stream(body.prompt, options)
+                async with aclosing(
+                    cast("AsyncGenerator[Message]", stream)
+                ) as messages:
+                    return await collect_result(messages)
         except TimeoutError as exc:
             raise HTTPException(
                 status.HTTP_504_GATEWAY_TIMEOUT, "agent run timed out"
             ) from exc
+        except AgentExecutionError as exc:
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
         except Exception as exc:
             logger.exception("agent execution failed")
             raise HTTPException(
                 status.HTTP_502_BAD_GATEWAY, "agent execution failed"
             ) from exc
         finally:
-            semaphore.release()
+            watcher.cancel()
+            try:
+                with suppress(asyncio.CancelledError):
+                    await watcher
+            finally:
+                semaphore.release()
 
     @app.post("/v1/query/stream", dependencies=[Auth])
     async def run_query_stream(  # pyright: ignore[reportUnusedFunction]

@@ -75,8 +75,8 @@ Request (only `prompt` is required):
 - `max_turns`: 1–1000. `max_budget_usd` and `timeout_seconds` must be > 0;
   `timeout_seconds` may not exceed `CASAPI_MAX_TIMEOUT_SECONDS`.
 
-If the client disconnects, the run is **not** cancelled: it continues until
-it finishes or times out, and its concurrency slot stays occupied.
+If the client disconnects, the run is promptly cancelled and its concurrency
+slot is freed.
 
 Response:
 
@@ -160,10 +160,9 @@ data: {"type": "error", "detail": "agent run timed out"}
 
 Treat a run as successful only when a `result` event arrives. A stream that
 ends without one — including a run whose message stream stops early — closes
-with an `error` event instead. There is no heartbeat: during a long tool
-call nothing is sent, so a proxy with an idle timeout (nginx defaults to
-60 s) can cut the connection on either endpoint; the run itself is
-unaffected on `/v1/query` and cancelled on this endpoint. Disconnecting
+with an `error` event instead. During idle periods the stream sends an SSE
+comment `: heartbeat` every 15 seconds; clients must ignore comment lines.
+Disconnecting
 from this endpoint cancels the run and releases its slot. The run deadline also
 cancels the run and releases its slot if the client stops reading. If a stream
 response is abandoned, its cleanup is deterministic and is bounded in the worst
