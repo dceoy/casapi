@@ -1066,3 +1066,38 @@ async def test_query_external_cancel_propagates(
         await asyncio.wait_for(task, 1)
     assert runner.closed.is_set()
     assert not test_app.state.semaphore.locked()
+
+
+@pytest.mark.asyncio
+async def test_query_disconnect_coalesced_external_cancel(tmp_path: Path) -> None:
+    """An external cancel coalesced with the disconnect cancel still propagates."""
+    runner = CleanupRunner()
+    test_app = create_app(make_settings(tmp_path, max_concurrency=1), runner)
+    gate = asyncio.Event()
+
+    async def receive() -> dict[str, Any]:
+        await gate.wait()
+        return {"type": "http.disconnect"}
+
+    route = next(
+        r for r in test_app.routes if isinstance(r, APIRoute) and r.path == "/v1/query"
+    )
+    endpoint = cast("Callable[..., Coroutine[Any, Any, Any]]", route.endpoint)
+    task = asyncio.create_task(
+        endpoint(
+            QueryRequest(prompt="x"),
+            Request({"type": "http", "app": test_app}, receive),
+        )
+    )
+    await asyncio.wait_for(runner.started.wait(), 1)
+    gate.set()
+    for _ in range(50):
+        await asyncio.sleep(0)
+        if task.cancelling():
+            break
+    assert task.cancelling() == 1
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 1)
+    assert runner.closed.is_set()
+    assert not test_app.state.semaphore.locked()
