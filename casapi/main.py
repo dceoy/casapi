@@ -107,6 +107,7 @@ class _SlotLease:
     def __init__(self, semaphore: asyncio.Semaphore) -> None:
         self.semaphore = semaphore
         self.released = False
+        self.claimed = False
 
     def release(self) -> None:
         """Return the slot if it is still held."""
@@ -127,6 +128,7 @@ async def _events(  # ruff: ignore[complex-structure]  # pump and consumer share
     Yields:
         Serialized SSE events.
     """
+    lease.claimed = True
     queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=1)
     started = False
     closing = False
@@ -194,7 +196,8 @@ class _ClosingStreamingResponse(StreamingResponse):
                 with anyio.CancelScope(shield=True):
                     await cast("AsyncGenerator[str]", self.body_iterator).aclose()
             finally:
-                self.lease.release()
+                if not self.lease.claimed:
+                    self.lease.release()
 
 
 def _add_meta_routes(app: FastAPI, settings: Settings) -> None:

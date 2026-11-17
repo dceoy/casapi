@@ -783,6 +783,19 @@ async def test_stream_cleanup_with_stalled_consumer(
 
 
 @pytest.mark.asyncio
+async def test_slot_lease_release_is_idempotent() -> None:
+    """Repeated release cannot inflate concurrency capacity."""
+    semaphore = asyncio.Semaphore(1)
+    await semaphore.acquire()
+    lease = _SlotLease(semaphore)
+    lease.release()
+    lease.release()
+    await semaphore.acquire()
+    assert semaphore.locked()
+    semaphore.release()
+
+
+@pytest.mark.asyncio
 async def test_stream_cancelled_before_pump_starts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -883,6 +896,108 @@ async def test_asgi_disconnect_waits_for_cleanup(
         )
     assert response.status_code == 200
     assert parse_sse(response.text)[-1]["type"] == "result"
+    await test_app.state.semaphore.acquire()
+    assert test_app.state.semaphore.locked()
+    test_app.state.semaphore.release()
+
+
+@pytest.mark.asyncio
+async def test_asgi_external_cancel_holds_slot_until_cleanup(  # ruff: ignore[complex-structure]
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Keep capacity occupied when shutdown interrupts disconnect cleanup."""
+    cleanup_started = asyncio.Event()
+    allow_cleanup = asyncio.Event()
+    cleanup_finished = asyncio.Event()
+
+    class SlowCleanupRunner(FakeRunner):
+        async def stream(
+            self, prompt: str, options: ClaudeAgentOptions
+        ) -> AsyncIterator[Message]:
+            assert prompt
+            assert options
+            try:
+                yield canned()[0]
+                await asyncio.Event().wait()
+            finally:
+                cleanup_started.set()
+                await allow_cleanup.wait()
+                cleanup_finished.set()
+
+    test_app = create_app(
+        make_settings(tmp_path, max_concurrency=1), SlowCleanupRunner()
+    )
+    first_event = asyncio.Event()
+    request_sent = False
+
+    async def receive() -> dict[str, Any]:
+        nonlocal request_sent
+        if not request_sent:
+            request_sent = True
+            return {
+                "type": "http.request",
+                "body": b'{"prompt":"x"}',
+                "more_body": False,
+            }
+        await first_event.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message: MutableMapping[str, Any]) -> None:  # ruff: ignore[unused-async]
+        if message["type"] == "http.response.body" and message.get("body"):
+            first_event.set()
+            raise OSError
+
+    scope: dict[str, Any] = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.4"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/v1/query/stream",
+        "raw_path": b"/v1/query/stream",
+        "query_string": b"",
+        "headers": [
+            (b"authorization", b"Bearer secret"),
+            (b"content-type", b"application/json"),
+        ],
+        "server": ("testserver", 80),
+        "client": ("testclient", 1234),
+    }
+    create_task = asyncio.create_task
+
+    class ShieldedPump:
+        def __init__(self, pump: asyncio.Task[Any]) -> None:
+            self.pump = pump
+
+        def cancel(self) -> bool:
+            return self.pump.cancel()
+
+        def __await__(self) -> Any:  # ruff: ignore[any-type]
+            return asyncio.shield(self.pump).__await__()
+
+    def create_shielded_pump(
+        coro: Any,  # ruff: ignore[any-type]
+        *args: Any,  # ruff: ignore[any-type]
+        **kwargs: Any,  # ruff: ignore[any-type]
+    ) -> Any:  # ruff: ignore[any-type]
+        task = create_task(coro, *args, **kwargs)
+        if coro.cr_code.co_name == "pump":
+            return ShieldedPump(task)
+        return task
+
+    monkeypatch.setattr(asyncio, "create_task", create_shielded_pump)
+    task = create_task(test_app(scope, receive, send))
+    try:
+        await asyncio.wait_for(cleanup_started.wait(), 1)
+        task.cancel()
+        await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 1)
+        assert test_app.state.semaphore.locked()
+    finally:
+        allow_cleanup.set()
+        await asyncio.wait_for(cleanup_finished.wait(), 1)
+    # The pump releases after the runner's cleanup returns.
+    await asyncio.sleep(0)
+    assert not test_app.state.semaphore.locked()
     await test_app.state.semaphore.acquire()
     assert test_app.state.semaphore.locked()
     test_app.state.semaphore.release()
