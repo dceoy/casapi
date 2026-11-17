@@ -968,11 +968,101 @@ async def test_query_disconnect_cancels_and_releases(
     first = asyncio.create_task(endpoint(QueryRequest(prompt="x"), request))
     await asyncio.wait_for(runner.started.wait(), 1)
     disconnected = True
-    with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(first, 1)
+    result = await asyncio.wait_for(first, 1)
+    assert result.status_code == 499
     assert runner.closed.is_set()
     runner.release.set()
     transport = httpx.ASGITransport(app=test_app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post("/v1/query", json={"prompt": "x"}, headers=AUTH)
     assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_query_asgi_disconnect_returns_499(tmp_path: Path) -> None:
+    """A disconnect completes the whole ASGI stack after runner cleanup."""
+    runner = CleanupRunner()
+    test_app = create_app(make_settings(tmp_path, max_concurrency=1), runner)
+    request_sent = False
+    sent: list[MutableMapping[str, Any]] = []
+
+    async def receive() -> dict[str, Any]:
+        nonlocal request_sent
+        if not request_sent:
+            request_sent = True
+            return {
+                "type": "http.request",
+                "body": b'{"prompt":"x"}',
+                "more_body": False,
+            }
+        await runner.started.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message: MutableMapping[str, Any]) -> None:  # ruff: ignore[unused-async]
+        sent.append(message)
+
+    scope: dict[str, Any] = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/v1/query",
+        "raw_path": b"/v1/query",
+        "query_string": b"",
+        "headers": [
+            (b"authorization", b"Bearer secret"),
+            (b"content-type", b"application/json"),
+        ],
+        "server": ("testserver", 80),
+        "client": ("testclient", 1234),
+    }
+    await asyncio.wait_for(test_app(scope, receive, send), 1)
+    assert any(m["type"] == "http.response.start" and m["status"] == 499 for m in sent)
+    assert runner.closed.is_set()
+    assert not test_app.state.semaphore.locked()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("disconnect", [False, True])
+async def test_query_external_cancel_propagates(
+    tmp_path: Path, disconnect: bool
+) -> None:
+    """External cancellation propagates, including alongside a disconnect."""
+
+    class CancelDuringCleanup(CleanupRunner):
+        async def stream(
+            self, prompt: str, options: ClaudeAgentOptions
+        ) -> AsyncIterator[Message]:
+            try:
+                async for message in super().stream(prompt, options):
+                    yield message
+            finally:
+                if disconnect:
+                    task = asyncio.current_task()
+                    assert task is not None
+                    task.cancel()
+
+    runner = CancelDuringCleanup()
+    test_app = create_app(make_settings(tmp_path, max_concurrency=1), runner)
+
+    async def receive() -> dict[str, Any]:
+        if disconnect:
+            await runner.started.wait()
+            return {"type": "http.disconnect"}
+        await asyncio.Event().wait()
+        return {"type": "http.disconnect"}
+
+    route = next(
+        r for r in test_app.routes if isinstance(r, APIRoute) and r.path == "/v1/query"
+    )
+    endpoint = cast("Callable[..., Coroutine[Any, Any, Any]]", route.endpoint)
+    request = Request({"type": "http", "app": test_app}, receive)
+    task = asyncio.create_task(endpoint(QueryRequest(prompt="x"), request))
+    await asyncio.wait_for(runner.started.wait(), 1)
+    if not disconnect:
+        task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 1)
+    assert runner.closed.is_set()
+    assert not test_app.state.semaphore.locked()

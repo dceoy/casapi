@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, cast
 import anyio
 from claude_agent_sdk import ResultError, ResultMessage
 from fastapi import Depends, FastAPI, HTTPException, Request, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 
 from casapi.agent import (
     AgentExecutionError,
@@ -208,10 +208,10 @@ def _add_meta_routes(app: FastAPI, settings: Settings) -> None:
 def _add_query_routes(app: FastAPI) -> None:
     """Register the agent execution routes."""
 
-    @app.post("/v1/query", dependencies=[Auth])
+    @app.post("/v1/query", dependencies=[Auth], response_model=QueryResponse)
     async def run_query(  # pyright: ignore[reportUnusedFunction]
         body: QueryRequest, request: Request
-    ) -> QueryResponse:
+    ) -> QueryResponse | Response:
         """Run one ephemeral agent query and return the transcript.
 
         Args:
@@ -223,15 +223,20 @@ def _add_query_routes(app: FastAPI) -> None:
 
         Raises:
             HTTPException: 502 on agent failure, 504 on timeout.
+            asyncio.CancelledError: If cancellation is not solely due to disconnect.
         """
         options, timeout, semaphore = await _prepare(request, body)
         agent_runner: AgentRunner = request.app.state.runner
         task = cast("asyncio.Task[object]", asyncio.current_task())
 
+        client_gone = False
+
         async def watch_disconnect() -> None:
+            nonlocal client_gone
             while not await request.is_disconnected():  # ruff: ignore[async-busy-wait]  # ASGI disconnect polling
                 await asyncio.sleep(DISCONNECT_POLL_INTERVAL)
             logger.info("client disconnected; cancelling agent run")
+            client_gone = True
             task.cancel()
 
         watcher = asyncio.create_task(watch_disconnect())
@@ -242,6 +247,10 @@ def _add_query_routes(app: FastAPI) -> None:
                     cast("AsyncGenerator[Message]", stream)
                 ) as messages:
                     return await collect_result(messages)
+        except asyncio.CancelledError:
+            if client_gone and task.uncancel() == 0:
+                return Response(status_code=499)
+            raise
         except TimeoutError as exc:
             raise HTTPException(
                 status.HTTP_504_GATEWAY_TIMEOUT, "agent run timed out"

@@ -76,7 +76,8 @@ Request (only `prompt` is required):
   `timeout_seconds` may not exceed `CASAPI_MAX_TIMEOUT_SECONDS`.
 
 If the client disconnects, the run is promptly cancelled and its concurrency
-slot is freed.
+slot is freed. The server internally answers 499 without logging an error; the
+response is not delivered to the disconnected client.
 
 Response:
 
