@@ -31,6 +31,7 @@ from claude_agent_sdk import (
 from fastapi import Request
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
+from starlette.requests import ClientDisconnect
 
 from casapi.agent import (
     AgentExecutionError,
@@ -43,7 +44,7 @@ from casapi.agent import (
     message_to_dict,
 )
 from casapi.config import Settings
-from casapi.main import _events, app, create_app  # pyright: ignore[reportPrivateUsage]
+from casapi.main import _events, _SlotLease, app, create_app  # pyright: ignore[reportPrivateUsage]
 from casapi.schemas import QueryRequest
 
 if TYPE_CHECKING:
@@ -788,7 +789,9 @@ async def test_stream_cancelled_before_pump_starts(
     """Release capacity if the response is cancelled before the pump runs."""
     semaphore = asyncio.Semaphore(1)
     await semaphore.acquire()
-    stream = _events(BlockingRunner(), "x", ClaudeAgentOptions(), 1, semaphore)
+    stream = _events(
+        BlockingRunner(), "x", ClaudeAgentOptions(), 1, _SlotLease(semaphore)
+    )
     create_task = asyncio.create_task
 
     def cancel_before_start(coro: Coroutine[Any, Any, None]) -> asyncio.Task[None]:
@@ -872,6 +875,17 @@ async def test_asgi_disconnect_waits_for_cleanup(
     assert first_event.is_set()
     assert runner.closed
     assert not test_app.state.semaphore.locked()
+    test_app.state.runner = FakeRunner()
+    transport = httpx.ASGITransport(app=test_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/v1/query/stream", json={"prompt": "x"}, headers=AUTH
+        )
+    assert response.status_code == 200
+    assert parse_sse(response.text)[-1]["type"] == "result"
+    await test_app.state.semaphore.acquire()
+    assert test_app.state.semaphore.locked()
+    test_app.state.semaphore.release()
 
 
 @pytest.mark.asyncio
@@ -1101,3 +1115,65 @@ async def test_query_disconnect_coalesced_external_cancel(tmp_path: Path) -> Non
         await asyncio.wait_for(task, 1)
     assert runner.closed.is_set()
     assert not test_app.state.semaphore.locked()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("spec_version", ["2.3", "2.4"])
+async def test_stream_header_send_failure_releases_slot(
+    tmp_path: Path, spec_version: str
+) -> None:
+    """A disconnect while sending headers releases the unstarted stream slot."""
+    runner = FakeRunner()
+    test_app = create_app(make_settings(tmp_path, max_concurrency=1), runner)
+    request_sent = False
+    statuses: list[int] = []
+
+    async def receive() -> dict[str, Any]:
+        nonlocal request_sent
+        if not request_sent:
+            request_sent = True
+            return {
+                "type": "http.request",
+                "body": b'{"prompt":"x"}',
+                "more_body": False,
+            }
+        await asyncio.Event().wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message: MutableMapping[str, Any]) -> None:  # ruff: ignore[unused-async]
+        if message["type"] == "http.response.start":
+            statuses.append(message["status"])
+            raise ConnectionError
+
+    scope: dict[str, Any] = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": spec_version},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/v1/query/stream",
+        "raw_path": b"/v1/query/stream",
+        "query_string": b"",
+        "headers": [
+            (b"authorization", b"Bearer secret"),
+            (b"content-type", b"application/json"),
+        ],
+        "server": ("testserver", 80),
+        "client": ("testclient", 1234),
+    }
+    with pytest.raises(ConnectionError if spec_version == "2.3" else ClientDisconnect):
+        await asyncio.wait_for(test_app(scope, receive, send), 1)
+    assert statuses == [200]
+    assert runner.options is None
+    assert not test_app.state.semaphore.locked()
+    transport = httpx.ASGITransport(app=test_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/v1/query/stream", json={"prompt": "x"}, headers=AUTH
+        )
+    assert response.status_code == 200
+    assert parse_sse(response.text)[-1]["type"] == "result"
+
+    await test_app.state.semaphore.acquire()
+    assert test_app.state.semaphore.locked()
+    test_app.state.semaphore.release()

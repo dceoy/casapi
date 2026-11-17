@@ -101,12 +101,26 @@ async def _stream_events(stream: AsyncIterator[Message]) -> AsyncGenerator[str]:
         yield _error_event("agent stream ended without a result message")
 
 
+class _SlotLease:
+    """Release an acquired semaphore slot at most once."""
+
+    def __init__(self, semaphore: asyncio.Semaphore) -> None:
+        self.semaphore = semaphore
+        self.released = False
+
+    def release(self) -> None:
+        """Return the slot if it is still held."""
+        if not self.released:
+            self.released = True
+            self.semaphore.release()
+
+
 async def _events(  # ruff: ignore[complex-structure]  # pump and consumer share lifecycle
     agent_runner: AgentRunner,
     prompt: str,
     options: ClaudeAgentOptions,
     run_timeout: float,
-    semaphore: asyncio.Semaphore,
+    lease: _SlotLease,
 ) -> AsyncIterator[str]:
     """Pump events with a deadline independent of response consumption.
 
@@ -133,7 +147,7 @@ async def _events(  # ruff: ignore[complex-structure]  # pump and consumer share
             logger.exception("agent execution failed")
             terminal = _error_event("agent execution failed")
         finally:
-            semaphore.release()
+            lease.release()
         if closing:
             return
         if terminal is not None:
@@ -157,19 +171,30 @@ async def _events(  # ruff: ignore[complex-structure]  # pump and consumer share
         with anyio.CancelScope(shield=True), suppress(asyncio.CancelledError):
             await task
         if not started:
-            semaphore.release()
+            lease.release()
 
 
 class _ClosingStreamingResponse(StreamingResponse):
     """Close the event generator even when sending the response is cancelled."""
+
+    def __init__(self, content: AsyncIterator[str], *, lease: _SlotLease) -> None:
+        super().__init__(
+            content,
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+        self.lease = lease
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Run the response and await generator cleanup on every exit."""
         try:
             await super().__call__(scope, receive, send)
         finally:
-            with anyio.CancelScope(shield=True):
-                await cast("AsyncGenerator[str]", self.body_iterator).aclose()
+            try:
+                with anyio.CancelScope(shield=True):
+                    await cast("AsyncGenerator[str]", self.body_iterator).aclose()
+            finally:
+                self.lease.release()
 
 
 def _add_meta_routes(app: FastAPI, settings: Settings) -> None:
@@ -286,10 +311,10 @@ def _add_query_routes(app: FastAPI) -> None:
         options, timeout, semaphore = await _prepare(request, body)
         agent_runner: AgentRunner = request.app.state.runner
 
+        lease = _SlotLease(semaphore)
         return _ClosingStreamingResponse(
-            _events(agent_runner, body.prompt, options, timeout, semaphore),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            _events(agent_runner, body.prompt, options, timeout, lease),
+            lease=lease,
         )
 
     _ = (run_query, run_query_stream)
