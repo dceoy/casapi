@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
+    ResultError,
     ResultMessage,
     SystemMessage,
     TextBlock,
@@ -248,13 +249,18 @@ async def collect_result(stream: AsyncIterator[Message]) -> QueryResponse:
 
     Raises:
         AgentExecutionError: If the stream ends without a ``ResultMessage``.
+        ResultError: If the SDK fails before producing a result.
     """
     messages: list[dict[str, Any]] = []
     final: ResultMessage | None = None
-    async for message in stream:
-        messages.append(message_to_dict(message))
-        if isinstance(message, ResultMessage):
-            final = message
+    try:
+        async for message in stream:
+            messages.append(message_to_dict(message))
+            if isinstance(message, ResultMessage):
+                final = message
+    except ResultError:
+        if final is None:
+            raise
     if final is None:
         msg = "agent stream ended without a result message"
         raise AgentExecutionError(msg)

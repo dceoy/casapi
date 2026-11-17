@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import TYPE_CHECKING
+from contextlib import aclosing, suppress
+from typing import TYPE_CHECKING, cast
 
-from claude_agent_sdk import ResultMessage
+from claude_agent_sdk import ResultError, ResultMessage
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 
@@ -23,7 +24,7 @@ from casapi.schemas import InfoResponse, QueryRequest, QueryResponse
 from casapi.security import auth_dependency, check_permission_mode, resolve_cwd
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncGenerator, AsyncIterator
 
     from claude_agent_sdk import ClaudeAgentOptions, Message
 
@@ -72,49 +73,75 @@ def _error_event(detail: str) -> str:
     return f"data: {json.dumps({'type': 'error', 'detail': detail})}\n\n"
 
 
-async def _next_message(
-    stream: AsyncIterator[Message], deadline: float
-) -> Message | None:
-    """Fetch the next stream message before the deadline.
-
-    Args:
-        stream: SDK message stream.
-        deadline: Monotonic time by which the run must finish.
-
-    Returns:
-        The next message, or None when the stream has ended. A deadline
-        overrun surfaces as ``TimeoutError`` from the underlying wait.
-    """
-    remaining = deadline - asyncio.get_running_loop().time()
-    try:
-        return await asyncio.wait_for(anext(stream), max(remaining, 0.0))
-    except StopAsyncIteration:
-        return None
-
-
-async def _stream_events(
-    stream: AsyncIterator[Message], deadline: float
-) -> AsyncIterator[str]:
-    """Serialize stream messages as SSE events.
-
-    Args:
-        stream: SDK message stream.
-        deadline: Monotonic time by which the run must finish.
+async def _stream_events(stream: AsyncIterator[Message]) -> AsyncGenerator[str]:
+    """Serialize SDK messages and close the stream.
 
     Yields:
-        One SSE event per message. A stream that ends without a result
-        message yields a final error event instead of closing silently.
+        Serialized SSE events.
+
+    Raises:
+        ResultError: If no result was received.
     """
     seen_result = False
-    while True:
-        message = await _next_message(stream, deadline)
-        if message is None:
-            break
-        if isinstance(message, ResultMessage):
-            seen_result = True
-        yield f"data: {json.dumps(message_to_dict(message))}\n\n"
+    async with aclosing(cast("AsyncGenerator[Message]", stream)) as messages:
+        try:
+            async for message in messages:
+                if isinstance(message, ResultMessage):
+                    seen_result = True
+                yield f"data: {json.dumps(message_to_dict(message))}\n\n"  # ruff: ignore[yield-in-context-manager-in-async-generator]  # closed by the pump
+        except ResultError:
+            if not seen_result:
+                raise
     if not seen_result:
         yield _error_event("agent stream ended without a result message")
+
+
+async def _events(
+    agent_runner: AgentRunner,
+    prompt: str,
+    options: ClaudeAgentOptions,
+    run_timeout: float,
+    semaphore: asyncio.Semaphore,
+) -> AsyncIterator[str]:
+    """Pump events with a deadline independent of response consumption.
+
+    Yields:
+        Serialized SSE events.
+    """
+    queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=1)
+    started = False
+
+    async def pump() -> None:
+        nonlocal started
+        started = True
+        terminal: str | None = None
+        try:
+            async with asyncio.timeout(run_timeout):
+                stream = agent_runner.stream(prompt, options)
+                async with aclosing(_stream_events(stream)) as serialized:
+                    async for event in serialized:
+                        await queue.put(event)
+        except TimeoutError:
+            terminal = _error_event("agent run timed out")
+        except Exception:
+            logger.exception("agent execution failed")
+            terminal = _error_event("agent execution failed")
+        finally:
+            semaphore.release()
+        if terminal is not None:
+            await queue.put(terminal)
+        await queue.put(None)
+
+    task = asyncio.create_task(pump())
+    try:
+        while (event := await queue.get()) is not None:
+            yield event
+    finally:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+        if not started:
+            semaphore.release()
 
 
 def _add_meta_routes(app: FastAPI, settings: Settings) -> None:
@@ -202,22 +229,8 @@ def _add_query_routes(app: FastAPI) -> None:
         options, timeout, semaphore = await _prepare(request, body)
         agent_runner: AgentRunner = request.app.state.runner
 
-        async def events() -> AsyncIterator[str]:
-            stream = agent_runner.stream(body.prompt, options)
-            deadline = asyncio.get_running_loop().time() + timeout
-            try:
-                async for event in _stream_events(stream, deadline):
-                    yield event
-            except TimeoutError:
-                yield _error_event("agent run timed out")
-            except Exception:
-                logger.exception("agent execution failed")
-                yield _error_event("agent execution failed")
-            finally:
-                semaphore.release()
-
         return StreamingResponse(
-            events(),
+            _events(agent_runner, body.prompt, options, timeout, semaphore),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )

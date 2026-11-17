@@ -14,6 +14,7 @@ from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
     Message,
+    ResultError,
     ResultMessage,
     ServerToolUseBlock,
     StreamEvent,
@@ -24,6 +25,8 @@ from claude_agent_sdk import (
     ToolUseBlock,
     UserMessage,
 )
+from fastapi import Request
+from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 from casapi.agent import (
@@ -37,11 +40,19 @@ from casapi.agent import (
     message_to_dict,
 )
 from casapi.config import Settings
-from casapi.main import app, create_app
+from casapi.main import _events, app, create_app  # pyright: ignore[reportPrivateUsage]
 from casapi.schemas import QueryRequest
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import (
+        AsyncGenerator,
+        AsyncIterator,
+        Awaitable,
+        Callable,
+        Coroutine,
+    )
+
+    from fastapi.responses import StreamingResponse
 
 
 def canned() -> list[Message]:
@@ -672,3 +683,119 @@ def test_sdk_runner_delegates(monkeypatch: pytest.MonkeyPatch) -> None:
     options = ClaudeAgentOptions()
     assert SdkAgentRunner().stream("p", options) == "stream"  # pyright: ignore[reportUnnecessaryComparison]
     assert calls == [("p", options)]
+
+
+class ResultErrorRunner(FakeRunner):
+    """Runner that raises the SDK terminal error after its messages."""
+
+    async def stream(
+        self, prompt: str, options: ClaudeAgentOptions
+    ) -> AsyncIterator[Message]:
+        """Yield configured messages and then fail as the SDK does."""
+        async for message in super().stream(prompt, options):
+            yield message
+        msg = "terminal result error"
+        raise ResultError(msg)
+
+
+def test_result_error_responses(tmp_path: Path) -> None:
+    """Preserve a terminal error result, but reject an absent result."""
+    result = replace(
+        cast("ResultMessage", canned()[-1]), is_error=True, subtype="error_max_turns"
+    )
+    messages = [canned()[0], result]
+    client, _ = client_for(make_settings(tmp_path), ResultErrorRunner(messages))
+    response = client.post("/v1/query", json={"prompt": "x"}, headers=AUTH)
+    assert response.status_code == 200
+    assert response.json()["is_error"] is True
+    assert [m["type"] for m in response.json()["messages"]] == ["system", "result"]
+    events = parse_sse(
+        client.post("/v1/query/stream", json={"prompt": "x"}, headers=AUTH).text
+    )
+    assert [e["type"] for e in events] == ["system", "result"]
+    assert events[-1]["is_error"] is True
+    client, _ = client_for(make_settings(tmp_path), ResultErrorRunner([]))
+    assert (
+        client.post("/v1/query", json={"prompt": "x"}, headers=AUTH).status_code == 502
+    )
+    events = parse_sse(
+        client.post("/v1/query/stream", json={"prompt": "x"}, headers=AUTH).text
+    )
+    assert events == [{"type": "error", "detail": "agent execution failed"}]
+
+
+class CleanupRunner(BlockingRunner):
+    """Record stream cleanup after cancellation or early closure."""
+
+    def __init__(self) -> None:
+        """Initialize cleanup tracking."""
+        super().__init__()
+        self.closed = asyncio.Event()
+
+    async def stream(
+        self, prompt: str, options: ClaudeAgentOptions
+    ) -> AsyncIterator[Message]:
+        """Yield then wait until cancelled, recording cleanup."""
+        try:
+            async for message in super().stream(prompt, options):
+                yield message
+        finally:
+            self.closed.set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("early_close", [False, True])
+async def test_stream_cleanup_with_stalled_consumer(
+    tmp_path: Path, early_close: bool
+) -> None:
+    """Close the runner before releasing capacity on timeout or early close."""
+    runner = CleanupRunner()
+    test_app = create_app(make_settings(tmp_path, max_concurrency=1), runner)
+    route = next(
+        r
+        for r in test_app.routes
+        if isinstance(r, APIRoute) and r.path == "/v1/query/stream"
+    )
+    request = Request({"type": "http", "app": test_app})
+    endpoint = cast("Callable[..., Awaitable[StreamingResponse]]", route.endpoint)
+    response = await endpoint(QueryRequest(prompt="x", timeout_seconds=0.05), request)
+    stream = cast("AsyncGenerator[str]", response.body_iterator)
+    assert parse_sse(await anext(stream))[0]["type"] == "system"
+    await asyncio.wait_for(runner.started.wait(), 1)
+    assert test_app.state.semaphore.locked()
+    if early_close:
+        await stream.aclose()
+    else:
+        await asyncio.wait_for(runner.closed.wait(), 1)
+        assert not test_app.state.semaphore.locked()
+        assert parse_sse(await anext(stream)) == [
+            {"type": "error", "detail": "agent run timed out"}
+        ]
+        with pytest.raises(StopAsyncIteration):
+            await anext(stream)
+    assert runner.closed.is_set()
+    assert not test_app.state.semaphore.locked()
+
+
+@pytest.mark.asyncio
+async def test_stream_cancelled_before_pump_starts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Release capacity if the response is cancelled before the pump runs."""
+    semaphore = asyncio.Semaphore(1)
+    await semaphore.acquire()
+    stream = _events(BlockingRunner(), "x", ClaudeAgentOptions(), 1, semaphore)
+    create_task = asyncio.create_task
+
+    def cancel_before_start(coro: Coroutine[Any, Any, None]) -> asyncio.Task[None]:
+        task = create_task(coro)
+        task.cancel()
+        asyncio.get_running_loop().call_soon(
+            cast("asyncio.Task[object]", asyncio.current_task()).cancel
+        )
+        return task
+
+    monkeypatch.setattr(asyncio, "create_task", cancel_before_start)
+    with pytest.raises(asyncio.CancelledError):
+        await anext(stream)
+    assert not semaphore.locked()
