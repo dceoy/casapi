@@ -902,8 +902,8 @@ async def test_asgi_disconnect_waits_for_cleanup(
 
 
 @pytest.mark.asyncio
-async def test_asgi_external_cancel_holds_slot_until_cleanup(  # ruff: ignore[complex-structure]
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+async def test_asgi_external_cancel_holds_slot_until_cleanup(
+    tmp_path: Path,
 ) -> None:
     """Keep capacity occupied when shutdown interrupts disconnect cleanup."""
     cleanup_started = asyncio.Event()
@@ -963,38 +963,16 @@ async def test_asgi_external_cancel_holds_slot_until_cleanup(  # ruff: ignore[co
         "server": ("testserver", 80),
         "client": ("testclient", 1234),
     }
-    create_task = asyncio.create_task
-
-    class ShieldedPump:
-        def __init__(self, pump: asyncio.Task[Any]) -> None:
-            self.pump = pump
-
-        def cancel(self) -> bool:
-            return self.pump.cancel()
-
-        def __await__(self) -> Any:  # ruff: ignore[any-type]
-            return asyncio.shield(self.pump).__await__()
-
-    def create_shielded_pump(
-        coro: Any,  # ruff: ignore[any-type]
-        *args: Any,  # ruff: ignore[any-type]
-        **kwargs: Any,  # ruff: ignore[any-type]
-    ) -> Any:  # ruff: ignore[any-type]
-        task = create_task(coro, *args, **kwargs)
-        if coro.cr_code.co_name == "pump":
-            return ShieldedPump(task)
-        return task
-
-    monkeypatch.setattr(asyncio, "create_task", create_shielded_pump)
-    task = create_task(test_app(scope, receive, send))
+    task = asyncio.create_task(test_app(scope, receive, send))
     try:
         await asyncio.wait_for(cleanup_started.wait(), 1)
         task.cancel()
         await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 1)
+        assert not cleanup_finished.is_set()
         assert test_app.state.semaphore.locked()
     finally:
         allow_cleanup.set()
-        await asyncio.wait_for(cleanup_finished.wait(), 1)
+    await asyncio.wait_for(cleanup_finished.wait(), 1)
     # The pump releases after the runner's cleanup returns.
     await asyncio.sleep(0)
     assert not test_app.state.semaphore.locked()

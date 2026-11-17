@@ -37,6 +37,9 @@ VERSION = "0.1.0"
 DISCONNECT_POLL_INTERVAL = 0.1
 HEARTBEAT_INTERVAL = 15.0
 
+# Keep detached cleanup alive if the response task is externally cancelled.
+_pump_tasks: set[asyncio.Task[None]] = set()
+
 Auth = Depends(auth_dependency)
 
 
@@ -157,6 +160,8 @@ async def _events(  # ruff: ignore[complex-structure]  # pump and consumer share
         await queue.put(None)
 
     task = asyncio.create_task(pump())
+    _pump_tasks.add(task)
+    task.add_done_callback(_pump_tasks.discard)
     try:
         while True:
             try:
@@ -171,7 +176,7 @@ async def _events(  # ruff: ignore[complex-structure]  # pump and consumer share
         closing = True
         task.cancel()
         with anyio.CancelScope(shield=True), suppress(asyncio.CancelledError):
-            await task
+            await asyncio.shield(task)
         if not started:
             lease.release()
 

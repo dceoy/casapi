@@ -165,9 +165,9 @@ with an `error` event instead. During idle periods the stream sends an SSE
 comment `: heartbeat` every 15 seconds; clients must ignore comment lines.
 Disconnecting
 from this endpoint cancels the run and releases its slot. The run deadline also
-cancels the run and releases its slot if the client stops reading. If a stream
-response is abandoned, its cleanup is deterministic and is bounded in the worst
-case by the run timeout.
+cancels the run and releases its slot if the client stops reading. For an
+abandoned stream, the run timeout initiates cancellation, but awaited SDK
+shutdown can extend beyond it.
 
 ## Errors
 
