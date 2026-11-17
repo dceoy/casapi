@@ -76,15 +76,15 @@ def resolve_cwd(settings: Settings, cwd: str | None) -> Path:
         candidate = path if path.is_absolute() else base / path
     try:
         resolved = candidate.resolve()
+        if not resolved.is_relative_to(base):
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN, "cwd is outside the workspace root"
+            )
         is_dir = resolved.is_dir()
     except (ValueError, OSError, RuntimeError) as exc:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST, "cwd is not a valid path"
         ) from exc
-    if not resolved.is_relative_to(base):
-        raise HTTPException(
-            status.HTTP_403_FORBIDDEN, "cwd is outside the workspace root"
-        )
     if not is_dir:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST, "cwd does not exist or is not a directory"

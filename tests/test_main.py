@@ -276,6 +276,26 @@ def test_cwd_symlinks_and_malformed(tmp_path: Path) -> None:
     assert post("bad\0path") == 400
 
 
+def test_cwd_containment_precedes_directory_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reject outside paths before consulting the filesystem for directory status."""
+    client, _ = client_for(make_settings(tmp_path))
+
+    def fail_is_dir(_self: Path) -> bool:
+        raise OSError
+
+    monkeypatch.setattr(Path, "is_dir", fail_is_dir)
+    response = client.post(
+        "/v1/query", json={"prompt": "x", "cwd": "../outside"}, headers=AUTH
+    )
+    assert response.status_code == 403
+    assert response.json() == {"detail": "cwd is outside the workspace root"}
+    response = client.post("/v1/query", json={"prompt": "x", "cwd": "."}, headers=AUTH)
+    assert response.status_code == 400
+    assert response.json() == {"detail": "cwd is not a valid path"}
+
+
 def test_bypass_permissions(tmp_path: Path) -> None:
     """Verify bypassPermissions is opt-in."""
     payload = {"prompt": "x", "permission_mode": "bypassPermissions"}
@@ -301,9 +321,9 @@ def test_runner_failures(tmp_path: Path) -> None:
     """Verify 502 and 504 mappings."""
     settings = make_settings(tmp_path)
     client, _ = client_for(settings, FakeRunner(fail_after=1))
-    assert (
-        client.post("/v1/query", json={"prompt": "x"}, headers=AUTH).status_code == 502
-    )
+    response = client.post("/v1/query", json={"prompt": "x"}, headers=AUTH)
+    assert response.status_code == 502
+    assert response.json() == {"detail": "agent execution failed"}
 
     no_result = FakeRunner(canned()[:2])
     client, _ = client_for(settings, no_result)
@@ -387,7 +407,7 @@ def test_stream_errors(tmp_path: Path) -> None:
     response = client.post("/v1/query/stream", json={"prompt": "x"}, headers=AUTH)
     events = parse_sse(response.text)
     assert [e["type"] for e in events] == ["system", "assistant", "error"]
-    assert "boom" in events[-1]["detail"]
+    assert events[-1]["detail"] == "agent execution failed"
 
     client, _ = client_for(settings, FakeRunner(delay=1.0))
     slow = {"prompt": "x", "timeout_seconds": 0.05}

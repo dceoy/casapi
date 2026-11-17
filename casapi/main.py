@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import TYPE_CHECKING
 
 from claude_agent_sdk import ResultMessage
@@ -25,6 +26,8 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
     from claude_agent_sdk import ClaudeAgentOptions, Message
+
+logger = logging.getLogger(__name__)
 
 VERSION = "0.1.0"
 
@@ -176,8 +179,9 @@ def _add_query_routes(app: FastAPI) -> None:
                 status.HTTP_504_GATEWAY_TIMEOUT, "agent run timed out"
             ) from exc
         except Exception as exc:
+            logger.exception("agent execution failed")
             raise HTTPException(
-                status.HTTP_502_BAD_GATEWAY, f"agent execution failed: {exc}"
+                status.HTTP_502_BAD_GATEWAY, "agent execution failed"
             ) from exc
         finally:
             semaphore.release()
@@ -206,8 +210,9 @@ def _add_query_routes(app: FastAPI) -> None:
                     yield event
             except TimeoutError:
                 yield _error_event("agent run timed out")
-            except Exception as exc:  # ruff: ignore[blind-except]
-                yield _error_event(f"agent execution failed: {exc}")
+            except Exception:
+                logger.exception("agent execution failed")
+                yield _error_event("agent execution failed")
             finally:
                 semaphore.release()
 
