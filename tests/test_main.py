@@ -8,6 +8,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
+import anyio
 import httpx
 import pytest
 from claude_agent_sdk import (
@@ -50,6 +51,7 @@ if TYPE_CHECKING:
         Awaitable,
         Callable,
         Coroutine,
+        MutableMapping,
     )
 
     from fastapi.responses import StreamingResponse
@@ -799,3 +801,72 @@ async def test_stream_cancelled_before_pump_starts(
     with pytest.raises(asyncio.CancelledError):
         await anext(stream)
     assert not semaphore.locked()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+async def test_asgi_disconnect_waits_for_cleanup(
+    tmp_path: Path, cleanup_fails: bool
+) -> None:
+    """Finish awaited cleanup on an ASGI 2.3 disconnect, even if it fails."""
+
+    class DisconnectRunner(FakeRunner):
+        closed = False
+
+        async def stream(
+            self, prompt: str, options: ClaudeAgentOptions
+        ) -> AsyncIterator[Message]:
+            assert prompt
+            assert options
+            try:
+                yield canned()[0]
+                await asyncio.Event().wait()
+            finally:
+                with anyio.CancelScope(shield=True):
+                    await asyncio.sleep(0)
+                    self.closed = True
+                if cleanup_fails:
+                    msg = "cleanup failed"
+                    raise RuntimeError(msg)
+
+    runner = DisconnectRunner()
+    test_app = create_app(make_settings(tmp_path, max_concurrency=1), runner)
+    first_event = asyncio.Event()
+    request_sent = False
+
+    async def receive() -> dict[str, Any]:
+        nonlocal request_sent
+        if not request_sent:
+            request_sent = True
+            return {
+                "type": "http.request",
+                "body": b'{"prompt":"x"}',
+                "more_body": False,
+            }
+        await first_event.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message: MutableMapping[str, Any]) -> None:  # ruff: ignore[unused-async]
+        if message["type"] == "http.response.body" and message.get("body"):
+            first_event.set()
+
+    scope: dict[str, Any] = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/v1/query/stream",
+        "raw_path": b"/v1/query/stream",
+        "query_string": b"",
+        "headers": [
+            (b"authorization", b"Bearer secret"),
+            (b"content-type", b"application/json"),
+        ],
+        "server": ("testserver", 80),
+        "client": ("testclient", 1234),
+    }
+    await asyncio.wait_for(test_app(scope, receive, send), 1)
+    assert first_event.is_set()
+    assert runner.closed
+    assert not test_app.state.semaphore.locked()

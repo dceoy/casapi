@@ -8,6 +8,7 @@ import logging
 from contextlib import aclosing, suppress
 from typing import TYPE_CHECKING, cast
 
+import anyio
 from claude_agent_sdk import ResultError, ResultMessage
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
@@ -110,9 +111,10 @@ async def _events(
     """
     queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=1)
     started = False
+    closing = False
 
     async def pump() -> None:
-        nonlocal started
+        nonlocal closing, started
         started = True
         terminal: str | None = None
         try:
@@ -128,6 +130,8 @@ async def _events(
             terminal = _error_event("agent execution failed")
         finally:
             semaphore.release()
+        if closing:
+            return
         if terminal is not None:
             await queue.put(terminal)
         await queue.put(None)
@@ -137,8 +141,9 @@ async def _events(
         while (event := await queue.get()) is not None:
             yield event
     finally:
+        closing = True
         task.cancel()
-        with suppress(asyncio.CancelledError):
+        with anyio.CancelScope(shield=True), suppress(asyncio.CancelledError):
             await task
         if not started:
             semaphore.release()
