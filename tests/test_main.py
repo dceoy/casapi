@@ -550,6 +550,8 @@ def test_build_options(tmp_path: Path) -> None:
     assert options.system_prompt == {"type": "preset", "preset": "claude_code"}
     assert options.setting_sources == []
     assert options.extra_args == {"no-session-persistence": None}
+    assert options.env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] == "1"
+    assert options.strict_mcp_config is True
     assert options.max_turns is None
     assert options.resume is None
     assert options.continue_conversation is False

@@ -217,6 +217,8 @@ def build_options(
         # prompt replaces the Claude Code preset; it never adds sources.
         "setting_sources": [],
         "extra_args": {"no-session-persistence": None},
+        "env": {"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"},
+        "strict_mcp_config": True,
         "system_prompt": (
             request.system_prompt
             if request.system_prompt is not None

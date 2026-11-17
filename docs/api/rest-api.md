@@ -14,8 +14,10 @@ include the needed context in the next prompt.
 Runs are hermetic. CLI session persistence is disabled, so the CLI writes no
 resumable transcript, and host and project settings are not loaded
 (`setting_sources` is empty): hooks, MCP servers, and permission rules from
-the host's or the workspace's `.claude/settings.json` never enter a run. What
-persists after a run is only what the agent itself writes — files in the
+the host's or the workspace's `.claude/settings.json` never enter a run. Auto
+memory is disabled (`CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`), and MCP configuration
+is strict and isolated. Managed policy settings and `~/.claude.json` still load.
+What persists after a run is only what the agent itself writes — files in the
 workspace and ordinary CLI bookkeeping under `~/.claude`.
 
 ## `GET /health`

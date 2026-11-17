@@ -94,8 +94,10 @@ curl -N https://casapi.example.net/v1/query/stream \
   other unknown field are rejected with 422. Runs are hermetic: CLI session
   persistence is disabled, so no resumable transcript is written, and host
   and project settings are not loaded (`setting_sources` is empty), so hooks
-  or MCP servers from the host or the workspace cannot leak into a run. The
-  default system prompt is the Claude Code preset. What still persists after
+  or MCP servers from those settings cannot leak into a run. Auto memory is
+  disabled (`CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`), and MCP configuration is
+  strict and isolated. Managed policy settings and `~/.claude.json` still load.
+  The default system prompt is the Claude Code preset. What still persists after
   a run: files the agent creates or edits in the workspace, and ordinary CLI
   bookkeeping under `~/.claude`.
 
