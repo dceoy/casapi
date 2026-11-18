@@ -33,7 +33,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 DISCONNECT_POLL_INTERVAL = 0.1
 HEARTBEAT_INTERVAL = 15.0
 
@@ -279,7 +279,9 @@ def _add_query_routes(app: FastAPI) -> None:
                 async with aclosing(
                     cast("AsyncGenerator[Message]", stream)
                 ) as messages:
-                    return await collect_result(messages)
+                    return await collect_result(
+                        messages, include_messages=body.include_messages
+                    )
         except asyncio.CancelledError:
             if client_gone and task.uncancel() == 0:
                 return Response(status_code=499)

@@ -32,7 +32,7 @@ No authentication.
 
 ```json
 {
-  "version": "0.1.0",
+  "version": "0.2.0",
   "stateless": true,
   "default_model": null,
   "workspace_root": "/srv/workspaces",
@@ -59,10 +59,14 @@ Request (only `prompt` is required):
   "max_turns": 5,
   "max_budget_usd": 1.0,
   "effort": "low",
-  "timeout_seconds": 300
+  "timeout_seconds": 300,
+  "include_messages": true
 }
 ```
 
+- `include_messages`: when `false`, the response omits the transcript (`messages`
+  is `[]`); intended for result-only clients. It has no effect on
+  `/v1/query/stream`.
 - `cwd`: relative to `CASAPI_WORKSPACE_ROOT`, or absolute inside it.
 - `system_prompt`: when omitted, the run uses the Claude Code preset system
   prompt. Send a string to replace it.
@@ -85,6 +89,7 @@ Response:
 {
   "result": "There are 3 Python files.",
   "session_id": "0b0e...",
+  "model": "...",
   "subtype": "success",
   "is_error": false,
   "num_turns": 2,
@@ -133,6 +138,8 @@ Response:
   ]
 }
 ```
+
+The top-level `model` is the model reported by the run's assistant messages (the last one wins) and is `null` when the run produced no assistant message, so clients can verify the model that actually ran without parsing the transcript.
 
 An agent-level failure (`is_error: true`, e.g. `subtype: "error_max_turns"`) is
 still HTTP `200`. Message types not listed above are emitted as

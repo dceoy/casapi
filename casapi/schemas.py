@@ -26,13 +26,15 @@ class QueryRequest(BaseModel):
     max_budget_usd: float | None = Field(default=None, gt=0)
     effort: EffortLevel | None = None
     timeout_seconds: float | None = Field(default=None, gt=0)
+    include_messages: bool = True
 
 
 class QueryResponse(BaseModel):
-    """Final agent result with the full message transcript."""
+    """Final agent result with an optional message transcript."""
 
     result: str | None
     session_id: str
+    model: str | None
     subtype: str
     is_error: bool
     num_turns: int
