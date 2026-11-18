@@ -238,11 +238,14 @@ def build_options(
     return ClaudeAgentOptions(**kwargs)
 
 
-async def collect_result(stream: AsyncIterator[Message]) -> QueryResponse:
+async def collect_result(
+    stream: AsyncIterator[Message], *, include_messages: bool = True
+) -> QueryResponse:
     """Consume a message stream and build the final response.
 
     Args:
         stream: SDK message stream.
+        include_messages: Whether to include the serialized transcript.
 
     Returns:
         Response built from the final ``ResultMessage``.
@@ -253,9 +256,13 @@ async def collect_result(stream: AsyncIterator[Message]) -> QueryResponse:
     """
     messages: list[dict[str, Any]] = []
     final: ResultMessage | None = None
-    try:
+    model: str | None = None
+    try:  # ruff: ignore[too-many-statements-in-try-clause]  # consume the complete stream
         async for message in stream:
-            messages.append(message_to_dict(message))
+            if isinstance(message, AssistantMessage):
+                model = message.model
+            if include_messages:
+                messages.append(message_to_dict(message))
             if isinstance(message, ResultMessage):
                 final = message
     except ResultError:
@@ -267,6 +274,7 @@ async def collect_result(stream: AsyncIterator[Message]) -> QueryResponse:
     return QueryResponse(
         result=final.result,
         session_id=final.session_id,
+        model=model,
         subtype=final.subtype,
         is_error=final.is_error,
         num_turns=final.num_turns,

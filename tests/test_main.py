@@ -192,6 +192,7 @@ def test_query_success(tmp_path: Path) -> None:
     body = response.json()
     assert body["result"] == "done"
     assert body["session_id"] == "s1"
+    assert body["model"] == "m"
     assert body["total_cost_usd"] == pytest.approx(0.01)
     assert body["is_error"] is False
     types = [m["type"] for m in body["messages"]]
@@ -204,6 +205,20 @@ def test_query_success(tmp_path: Path) -> None:
     assert runner.options is not None
     assert runner.options.cwd == str(tmp_path.resolve())
     assert runner.options.permission_mode == "acceptEdits"
+
+
+def test_query_without_messages(tmp_path: Path) -> None:
+    """Result-only queries omit the transcript."""
+    client, _ = client_for(make_settings(tmp_path))
+    response = client.post(
+        "/v1/query", json={"prompt": "hi", "include_messages": False}, headers=AUTH
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["result"] == "done"
+    assert body["session_id"] == "s1"
+    assert body["model"] == "m"
+    assert body["messages"] == []
 
 
 def test_query_agent_error_is_200(tmp_path: Path) -> None:
@@ -674,6 +689,27 @@ async def test_collect_result_missing() -> None:
     """Verify missing ResultMessage raises."""
     with pytest.raises(AgentExecutionError):
         await collect_result(FakeRunner([]).stream("x", ClaudeAgentOptions()))
+
+
+@pytest.mark.asyncio
+async def test_collect_result_without_assistant() -> None:
+    """A result without an assistant message has no model."""
+    response = await collect_result(
+        FakeRunner([canned()[-1]]).stream("x", ClaudeAgentOptions()),
+        include_messages=False,
+    )
+    assert response.model is None
+    assert response.messages == []
+
+
+@pytest.mark.asyncio
+async def test_collect_result_last_assistant_model() -> None:
+    """The last assistant message determines the response model."""
+    messages = [AssistantMessage(content=[], model="first"), *canned()]
+    response = await collect_result(
+        FakeRunner(messages).stream("x", ClaudeAgentOptions())
+    )
+    assert response.model == "m"
 
 
 def test_sdk_runner_delegates(monkeypatch: pytest.MonkeyPatch) -> None:
