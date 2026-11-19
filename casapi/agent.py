@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import dataclasses
 import re
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from claude_agent_sdk import (
@@ -21,11 +20,18 @@ from claude_agent_sdk import (
     query,
 )
 
-from casapi.sandbox import build_sandbox_settings, sandbox_cache_dir, sandbox_env
+from casapi.sandbox import (
+    build_sandbox_settings,
+    bundled_cli_path,
+    prepare_sandbox_cache,
+    sandbox_env,
+    service_home,
+)
 from casapi.schemas import QueryResponse
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
+    from pathlib import Path
 
     from claude_agent_sdk import Message
 
@@ -193,7 +199,7 @@ def message_to_dict(message: object) -> dict[str, Any]:
 
 
 def build_options(
-    request: QueryRequest, settings: Settings, cwd: Path
+    request: QueryRequest, settings: Settings, cwd: Path, home: Path | None = None
 ) -> ClaudeAgentOptions:
     """Build stateless SDK options from a request and server defaults.
 
@@ -201,6 +207,7 @@ def build_options(
         request: Validated request.
         settings: Server settings.
         cwd: Resolved working directory.
+        home: Service home directory for sandboxed runs; looked up if omitted.
 
     Returns:
         SDK options; never sets session/resume fields.
@@ -237,8 +244,9 @@ def build_options(
     }
     kwargs.update({k: v for k, v in optional.items() if v is not None})
     if request.sandbox:
-        home = Path.home()
-        sandbox_cache_dir(home).mkdir(mode=0o700, parents=True, exist_ok=True)
+        home = home or service_home()
+        kwargs["cli_path"] = bundled_cli_path()
+        prepare_sandbox_cache(home)
         kwargs["sandbox"] = build_sandbox_settings(settings, home)
         kwargs["env"] = {**kwargs["env"], **sandbox_env(home)}
     return ClaudeAgentOptions(**kwargs)

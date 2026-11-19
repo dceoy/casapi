@@ -92,20 +92,61 @@ def resolve_cwd(settings: Settings, cwd: str | None) -> Path:
     return resolved
 
 
-def check_sandbox_request(settings: Settings, requested: bool) -> None:
-    """Reject sandboxed runs unless the operator enabled the sandbox.
+EGRESS_EXPANDING_MODES = frozenset({"auto", "bypassPermissions"})
+
+
+def check_sandbox_request(
+    settings: Settings, requested: bool, permission_mode: str | None = None
+) -> None:
+    """Reject sandboxed runs that are disabled or could widen network egress.
 
     Args:
         settings: Server settings.
         requested: Whether the request asked for the Bash sandbox.
+        permission_mode: Permission mode from the request, if any; the server
+            default applies when omitted.
 
     Raises:
-        HTTPException: 403 if the sandbox is requested while disabled.
+        HTTPException: 403 if the sandbox is requested while disabled, or if the
+            effective permission mode can expand network egress.
     """
-    if requested and settings.sandbox_mode == "off":
+    if not requested:
+        return
+    if settings.sandbox_mode == "off":
         raise HTTPException(
             status.HTTP_403_FORBIDDEN,
             "sandbox is disabled (CASAPI_SANDBOX_MODE=off)",
+        )
+    mode = permission_mode or settings.permission_mode
+    if mode in EGRESS_EXPANDING_MODES:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            f"permission mode {mode} is incompatible with sandbox "
+            "(it can expand network egress)",
+        )
+
+
+def check_sandbox_cwd(cwd: Path, home: Path) -> None:
+    """Reject working directories that would make the shared cache writable.
+
+    The CLI grants write access to the whole working directory, so it must not
+    be ``~/.cache``, an ancestor of it (including the home directory), or a
+    location inside ``~/.cache`` other than the dedicated sandbox subtree.
+
+    Args:
+        cwd: Resolved working directory.
+        home: Home directory of the server user.
+
+    Raises:
+        HTTPException: 403 if the directory overlaps the shared cache.
+    """
+    cache = home.resolve() / ".cache"
+    if cwd.is_relative_to(cache / "casapi-sandbox"):
+        return
+    if cache.is_relative_to(cwd) or cwd.is_relative_to(cache):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "cwd overlaps the shared cache and is not allowed with sandbox",
         )
 
 

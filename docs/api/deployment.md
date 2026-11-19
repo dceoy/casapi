@@ -65,9 +65,20 @@ WantedBy=multi-user.target
 Runs that send `sandbox: true` execute Bash inside the Claude CLI sandbox.
 
 - Prerequisites on the host: `bwrap` (bubblewrap), `socat`, and `rg` (ripgrep).
-- The CLI used is the one bundled with the installed `claude-agent-sdk`, not
-  any `claude` on `PATH`. Its version decides how sandbox settings are
+- Sandboxed runs are pinned to the CLI bundled with the installed
+  `claude-agent-sdk` (`cli_path`), never any `claude` on `PATH`; if the bundled
+  executable is missing or not executable the request fails (503). Its version decides how sandbox settings are
   interpreted, so redo the probe below after every SDK update.
+- Sandboxed requests are rejected (403) when the effective permission mode is
+  `auto` or `bypassPermissions`, and when the working directory overlaps
+  `~/.cache` (for example a workspace root equal to the service home with no
+  `cwd`). Keep `CASAPI_WORKSPACE_ROOT` away from the service home, or ensure
+  clients send a `cwd` below a project directory.
+- `~/.cache/casapi-sandbox` is created with mode 0700 on first use; it must be
+  a real directory owned by the service user (symlinks are rejected, broader
+  modes are tightened).
+- `CASAPI_SANDBOX_MODE` accepts exactly `off` or `opt-in`; anything else aborts
+  startup.
 - The sandbox is fail-closed. On Ubuntu releases that ship the
   `bwrap-userns-restrict` AppArmor profile, the sandbox's seccomp helper cannot
   start, so `sandbox: true` requests fail until the host policy is adjusted

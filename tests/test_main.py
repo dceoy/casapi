@@ -46,10 +46,13 @@ from casapi.agent import (
 from casapi.config import DEFAULT_SANDBOX_ALLOWED_DOMAINS, Settings
 from casapi.main import _events, _SlotLease, app, create_app  # pyright: ignore[reportPrivateUsage]
 from casapi.sandbox import (
-    SANDBOX_DENIED_ENV_VARS,
+    SandboxSetupError,
     build_sandbox_settings,
+    bundled_cli_path,
+    prepare_sandbox_cache,
     sandbox_cache_dir,
     sandbox_env,
+    service_home,
 )
 from casapi.schemas import QueryRequest
 from casapi.security import check_sandbox_request
@@ -122,8 +125,24 @@ class FakeRunner:
         self.fail_after = fail_after
         self.delay = delay
         self.options: ClaudeAgentOptions | None = None
+        self.stream_calls = 0
 
-    async def stream(
+    def stream(
+        self, prompt: str, options: ClaudeAgentOptions
+    ) -> AsyncIterator[Message]:
+        """Count the call itself, then return the message generator.
+
+        Args:
+            prompt: Forwarded.
+            options: Forwarded.
+
+        Returns:
+            Async iterator of canned messages.
+        """
+        self.stream_calls += 1
+        return self._generate(prompt, options)
+
+    async def _generate(
         self, prompt: str, options: ClaudeAgentOptions
     ) -> AsyncIterator[Message]:
         """Yield canned messages.
@@ -581,7 +600,7 @@ def test_settings_from_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
     monkeypatch.setenv("CASAPI_ALLOW_BYPASS_PERMISSIONS", "off")
     monkeypatch.setenv("CASAPI_MAX_CONCURRENCY", "7")
     monkeypatch.setenv("CASAPI_MAX_TIMEOUT_SECONDS", "12.5")
-    monkeypatch.setenv("CASAPI_SANDBOX_MODE", " Opt-In ")
+    monkeypatch.setenv("CASAPI_SANDBOX_MODE", "opt-in")
     monkeypatch.setenv(
         "CASAPI_SANDBOX_ALLOWED_DOMAINS", " GitHub.com , *.example.org,,"
     )
@@ -599,17 +618,29 @@ def test_settings_from_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
     assert settings.sandbox_allowed_domains == ("github.com", "*.example.org")
 
 
-@pytest.mark.parametrize("value", ["required", "bogus"])
+@pytest.mark.parametrize(
+    "value", ["required", "bogus", "", "OFF", "Opt-In", " opt-in ", "off ", "OPT-IN"]
+)
 def test_settings_sandbox_mode_invalid(
     monkeypatch: pytest.MonkeyPatch, value: str
 ) -> None:
-    """Verify unknown sandbox modes fail at startup."""
+    """Verify only the exact literals off/opt-in are accepted."""
     monkeypatch.setenv("CASAPI_SANDBOX_MODE", value)
     with pytest.raises(ValueError, match="CASAPI_SANDBOX_MODE"):
         Settings.from_env()
 
 
-@pytest.mark.parametrize("value", ["", " , "])
+def test_settings_sandbox_mode_literals(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify unset defaults to off and the exact literals parse."""
+    monkeypatch.delenv("CASAPI_SANDBOX_MODE", raising=False)
+    assert Settings.from_env().sandbox_mode == "off"
+    monkeypatch.setenv("CASAPI_SANDBOX_MODE", "off")
+    assert Settings.from_env().sandbox_mode == "off"
+    monkeypatch.setenv("CASAPI_SANDBOX_MODE", "opt-in")
+    assert Settings.from_env().sandbox_mode == "opt-in"
+
+
+@pytest.mark.parametrize("value", ["", " , ", " ,, "])
 def test_settings_sandbox_domains_empty(
     monkeypatch: pytest.MonkeyPatch, value: str
 ) -> None:
@@ -618,7 +649,47 @@ def test_settings_sandbox_domains_empty(
     assert Settings.from_env().sandbox_allowed_domains == ()
 
 
-@pytest.mark.parametrize("value", ["https://github.com", "github.com/x", "localhost"])
+def test_settings_sandbox_domains_normalization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify lowercasing, whitespace trimming, empty entries, and punycode."""
+    monkeypatch.setenv(
+        "CASAPI_SANDBOX_ALLOWED_DOMAINS",
+        " GitHub.com ,, *.Example.org,xn--bcher-kva.example,",
+    )
+    assert Settings.from_env().sandbox_allowed_domains == (
+        "github.com",
+        "*.example.org",
+        "xn--bcher-kva.example",
+    )
+    label63 = "a" * 63
+    host253 = ".".join(["a" * 63, "a" * 63, "a" * 63, "a" * 61])
+    assert len(host253) == 253
+    monkeypatch.setenv("CASAPI_SANDBOX_ALLOWED_DOMAINS", f"{label63}.com,{host253}")
+    assert Settings.from_env().sandbox_allowed_domains == (f"{label63}.com", host253)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://github.com",
+        "github.com/x",
+        "localhost",
+        "*.com.*",  # embedded wildcard
+        "a.*.com",  # embedded wildcard
+        "*.*.example.com",  # repeated wildcard
+        "*example.com",  # wildcard not a full label
+        "a..com",  # empty DNS label
+        ".a.com",  # leading empty label
+        "a.com.",  # trailing dot
+        "*.",  # wildcard only
+        "-a.com",
+        "a-.com",
+        "bücher.example",  # raw Unicode (needs punycode)
+        "a" * 64 + ".com",  # label too long
+        ".".join(["a" * 63, "a" * 63, "a" * 63, "a" * 62]),  # 254 chars
+    ],
+)
 def test_settings_sandbox_domains_invalid(
     monkeypatch: pytest.MonkeyPatch, value: str
 ) -> None:
@@ -1358,6 +1429,60 @@ async def test_stream_header_send_failure_releases_slot(
     test_app.state.semaphore.release()
 
 
+@dataclass
+class SandboxEnv:
+    """Isolated service home and workspace for sandbox tests."""
+
+    home: Path
+    workspace: Path
+    cli: Path
+
+
+@pytest.fixture
+def sbx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SandboxEnv:
+    """Provide a service home, a separate workspace, and a fake bundled CLI.
+
+    Returns:
+        The isolated environment.
+    """
+    home = tmp_path / "home"
+    workspace = tmp_path / "ws"
+    home.mkdir()
+    workspace.mkdir()
+    sdk = tmp_path / "sdk"
+    cli = sdk / "_bundled" / "claude"
+    cli.parent.mkdir(parents=True)
+    cli.write_text("#!/bin/sh\n")
+    cli.chmod(0o755)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr("casapi.sandbox._SDK_DIR", sdk)
+    return SandboxEnv(home, workspace, cli)
+
+
+def sbx_client(
+    sbx: SandboxEnv,
+    *,
+    root: Path | None = None,
+    **kwargs: Any,  # ruff: ignore[any-type]
+) -> tuple[TestClient, FakeRunner]:
+    """Create an opt-in sandbox client.
+
+    Args:
+        sbx: Sandbox environment.
+        root: Workspace root override.
+        **kwargs: Settings overrides.
+
+    Returns:
+        Client and runner.
+    """
+    return client_for(
+        make_settings(root or sbx.workspace, sandbox_mode="opt-in", **kwargs)
+    )
+
+
+SANDBOX_BODY = {"prompt": "x", "sandbox": True}
+
+
 def test_check_sandbox_request() -> None:
     """Verify the sandbox request guard."""
     check_sandbox_request(Settings(), requested=False)
@@ -1367,6 +1492,8 @@ def test_check_sandbox_request() -> None:
     opt_in = Settings(sandbox_mode="opt-in")
     check_sandbox_request(opt_in, requested=False)
     check_sandbox_request(opt_in, requested=True)
+    check_sandbox_request(opt_in, requested=True, permission_mode="plan")
+    check_sandbox_request(opt_in, requested=False, permission_mode="auto")
 
 
 def test_sandbox_rejected_when_off(tmp_path: Path) -> None:
@@ -1379,6 +1506,7 @@ def test_sandbox_rejected_when_off(tmp_path: Path) -> None:
     assert response.json() == {
         "detail": "sandbox is disabled (CASAPI_SANDBOX_MODE=off)"
     }
+    assert runner.stream_calls == 0
     assert runner.options is None
 
 
@@ -1389,6 +1517,7 @@ def test_sandbox_stream_rejected_when_off(tmp_path: Path) -> None:
         "/v1/query/stream", json={"prompt": "x", "sandbox": True}, headers=AUTH
     )
     assert response.status_code == 403
+    assert runner.stream_calls == 0
     assert runner.options is None
 
 
@@ -1401,28 +1530,34 @@ def test_sandbox_false_when_off(tmp_path: Path) -> None:
     assert response.status_code == 200
     assert runner.options is not None
     assert runner.options.sandbox is None
+    assert runner.options.cli_path is None
 
 
-def test_sandbox_opt_in_enabled(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_sandbox_opt_in_enabled(sbx: SandboxEnv) -> None:
     """Verify an opt-in sandbox request builds sandboxed options."""
-    home = tmp_path / "home"
-    monkeypatch.setenv("HOME", str(home))
-    settings = make_settings(tmp_path, sandbox_mode="opt-in")
+    settings = make_settings(sbx.workspace, sandbox_mode="opt-in")
     client, runner = client_for(settings)
-    response = client.post(
-        "/v1/query", json={"prompt": "x", "sandbox": True}, headers=AUTH
-    )
+    response = client.post("/v1/query", json=SANDBOX_BODY, headers=AUTH)
     assert response.status_code == 200
     assert runner.options is not None
-    assert runner.options.sandbox == build_sandbox_settings(settings, home)
+    assert runner.options.sandbox == build_sandbox_settings(settings, sbx.home)
+    assert runner.options.cli_path == sbx.cli
     env = runner.options.env
-    assert env["XDG_CACHE_HOME"] == str(sandbox_cache_dir(home))
+    assert env["XDG_CACHE_HOME"] == str(sandbox_cache_dir(sbx.home))
     assert env["npm_config_cache"]
     assert env["npm_config_store_dir"]
     assert env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] == "1"
-    assert sandbox_cache_dir(home).is_dir()
+    cache = sandbox_cache_dir(sbx.home)
+    assert cache.is_dir()
+    assert cache.stat().st_mode & 0o777 == 0o700
+
+
+def test_sandbox_stream_opt_in_enabled(sbx: SandboxEnv) -> None:
+    """Verify the stream endpoint also runs sandboxed."""
+    client, runner = sbx_client(sbx)
+    response = client.post("/v1/query/stream", json=SANDBOX_BODY, headers=AUTH)
+    assert response.status_code == 200
+    assert runner.stream_calls == 1
 
 
 def test_sandbox_opt_in_not_requested(tmp_path: Path) -> None:
@@ -1432,7 +1567,248 @@ def test_sandbox_opt_in_not_requested(tmp_path: Path) -> None:
     assert response.status_code == 200
     assert runner.options is not None
     assert runner.options.sandbox is None
+    assert runner.options.cli_path is None
     assert "XDG_CACHE_HOME" not in runner.options.env
+
+
+@pytest.mark.parametrize("path", ["/v1/query", "/v1/query/stream"])
+@pytest.mark.parametrize("mode", ["auto", "bypassPermissions"])
+def test_sandbox_rejects_egress_mode_in_request(
+    sbx: SandboxEnv, path: str, mode: str
+) -> None:
+    """Verify requested egress-expanding modes are rejected with 403."""
+    client, runner = sbx_client(sbx, allow_bypass_permissions=True)
+    body = {**SANDBOX_BODY, "permission_mode": mode}
+    response = client.post(path, json=body, headers=AUTH)
+    assert response.status_code == 403
+    detail = response.json()["detail"]
+    assert mode in detail
+    assert "incompatible with sandbox" in detail
+    assert runner.stream_calls == 0
+    assert not sandbox_cache_dir(sbx.home).exists()
+
+
+@pytest.mark.parametrize("path", ["/v1/query", "/v1/query/stream"])
+@pytest.mark.parametrize("mode", ["auto", "bypassPermissions"])
+def test_sandbox_rejects_egress_mode_inherited(
+    sbx: SandboxEnv, path: str, mode: str
+) -> None:
+    """Verify egress-expanding server default modes are rejected."""
+    client, runner = sbx_client(
+        sbx, permission_mode=mode, allow_bypass_permissions=True
+    )
+    response = client.post(path, json=SANDBOX_BODY, headers=AUTH)
+    assert response.status_code == 403
+    assert "incompatible with sandbox" in response.json()["detail"]
+    assert runner.stream_calls == 0
+
+
+def test_sandbox_request_mode_overrides_default(sbx: SandboxEnv) -> None:
+    """Verify a safe request mode wins over an egress-expanding default."""
+    client, runner = sbx_client(sbx, permission_mode="auto")
+    body = {**SANDBOX_BODY, "permission_mode": "plan"}
+    assert client.post("/v1/query", json=body, headers=AUTH).status_code == 200
+    assert runner.stream_calls == 1
+
+
+def test_unsandboxed_egress_mode_allowed(sbx: SandboxEnv) -> None:
+    """Verify the egress guard applies to sandboxed runs only."""
+    client, runner = sbx_client(sbx, permission_mode="auto")
+    response = client.post("/v1/query", json={"prompt": "x"}, headers=AUTH)
+    assert response.status_code == 200
+    assert runner.stream_calls == 1
+
+
+@pytest.mark.parametrize("path", ["/v1/query", "/v1/query/stream"])
+def test_sandbox_rejects_cwd_at_home_root(sbx: SandboxEnv, path: str) -> None:
+    """Verify a workspace rooted at the service home is rejected without cwd."""
+    (sbx.home / ".cache").mkdir()
+    client, runner = sbx_client(sbx, root=sbx.home)
+    response = client.post(path, json=SANDBOX_BODY, headers=AUTH)
+    assert response.status_code == 403
+    assert "cache" in response.json()["detail"]
+    assert runner.stream_calls == 0
+    assert not sandbox_cache_dir(sbx.home).exists()
+
+
+def test_sandbox_rejects_cwd_ancestor_and_shared_cache(sbx: SandboxEnv) -> None:
+    """Verify ancestors of ~/.cache and non-dedicated cache subdirs are rejected."""
+    cache = sbx.home / ".cache"
+    (cache / "pip").mkdir(parents=True)
+    (cache / "casapi-sandbox" / "work").mkdir(parents=True)
+    client, runner = sbx_client(sbx, root=sbx.home)
+    for cwd in (".cache", ".cache/pip", "."):
+        body = {**SANDBOX_BODY, "cwd": cwd}
+        response = client.post("/v1/query", json=body, headers=AUTH)
+        assert response.status_code == 403, cwd
+    assert runner.stream_calls == 0
+    ok = {**SANDBOX_BODY, "cwd": ".cache/casapi-sandbox/work"}
+    assert client.post("/v1/query", json=ok, headers=AUTH).status_code == 200
+    assert runner.stream_calls == 1
+
+
+def test_sandbox_allows_unrelated_cwd_under_home(sbx: SandboxEnv) -> None:
+    """Verify a sibling directory of ~/.cache is allowed."""
+    project = sbx.home / "project"
+    project.mkdir()
+    client, runner = sbx_client(sbx, root=sbx.home)
+    body = {**SANDBOX_BODY, "cwd": "project"}
+    assert client.post("/v1/query", json=body, headers=AUTH).status_code == 200
+    assert runner.stream_calls == 1
+
+
+def test_unsandboxed_cwd_at_home_allowed(sbx: SandboxEnv) -> None:
+    """Verify the cache guard applies to sandboxed runs only."""
+    client, runner = sbx_client(sbx, root=sbx.home)
+    assert (
+        client.post("/v1/query", json={"prompt": "x"}, headers=AUTH).status_code == 200
+    )
+    assert runner.stream_calls == 1
+
+
+def test_sandbox_cache_hardening(sbx: SandboxEnv) -> None:
+    """Verify an existing broad-mode cache directory is tightened."""
+    cache = sandbox_cache_dir(sbx.home)
+    cache.mkdir(parents=True)
+    cache.chmod(0o777)
+    assert prepare_sandbox_cache(sbx.home) == cache
+    assert cache.stat().st_mode & 0o777 == 0o700
+
+
+def test_sandbox_cache_chmod_ineffective(
+    sbx: SandboxEnv, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify failing to tighten the mode fails closed."""
+    cache = sandbox_cache_dir(sbx.home)
+    cache.mkdir(parents=True)
+    cache.chmod(0o777)
+
+    def no_chmod(self: Path, mode: int) -> None:
+        assert self == cache
+        assert mode == 0o700
+
+    monkeypatch.setattr(Path, "chmod", no_chmod)
+    with pytest.raises(SandboxSetupError, match="too broad"):
+        prepare_sandbox_cache(sbx.home)
+
+
+def test_sandbox_cache_symlink_leaf(sbx: SandboxEnv) -> None:
+    """Verify a symlinked cache leaf is rejected, not followed."""
+    cache = sandbox_cache_dir(sbx.home)
+    cache.parent.mkdir()
+    target = sbx.home / "elsewhere"
+    target.mkdir()
+    cache.symlink_to(target)
+    with pytest.raises(SandboxSetupError, match="owned directory"):
+        prepare_sandbox_cache(sbx.home)
+
+
+def test_sandbox_cache_not_directory(sbx: SandboxEnv) -> None:
+    """Verify a regular file in place of the cache is rejected."""
+    cache = sandbox_cache_dir(sbx.home)
+    cache.parent.mkdir()
+    cache.write_text("x")
+    with pytest.raises(SandboxSetupError, match="owned directory"):
+        prepare_sandbox_cache(sbx.home)
+
+
+def test_sandbox_cache_wrong_owner(
+    sbx: SandboxEnv, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify a directory owned by someone else is rejected."""
+    monkeypatch.setattr("casapi.sandbox.os.geteuid", lambda: 4242424)
+    with pytest.raises(SandboxSetupError, match="owned directory"):
+        prepare_sandbox_cache(sbx.home)
+
+
+def test_sandbox_cache_missing_home_dir(tmp_path: Path) -> None:
+    """Verify OS errors become SandboxSetupError."""
+    with pytest.raises(SandboxSetupError, match="setup failed"):
+        prepare_sandbox_cache(tmp_path / "absent")
+
+
+def test_sandbox_setup_failure_is_controlled(
+    sbx: SandboxEnv,
+) -> None:
+    """Verify a cache setup failure is a controlled 503 and the slot is freed."""
+    (sbx.home / ".cache").write_text("not a directory")
+    client, runner = sbx_client(sbx, max_concurrency=1)
+    for path in ("/v1/query", "/v1/query/stream", "/v1/query"):
+        response = client.post(path, json=SANDBOX_BODY, headers=AUTH)
+        assert response.status_code == 503
+        assert "sandbox unavailable" in response.json()["detail"]
+    assert runner.stream_calls == 0
+    ok = client.post("/v1/query", json={"prompt": "x"}, headers=AUTH)
+    assert ok.status_code == 200
+
+
+def test_sandbox_capacity_checked_before_setup(sbx: SandboxEnv) -> None:
+    """Verify 429 is returned before any filesystem setup happens."""
+    runner = FakeRunner()
+    test_app = create_app(make_settings(sbx.workspace, sandbox_mode="opt-in"), runner)
+    test_app.state.semaphore = asyncio.Semaphore(0)
+    client = TestClient(test_app)
+    response = client.post("/v1/query", json=SANDBOX_BODY, headers=AUTH)
+    assert response.status_code == 429
+    assert not (sbx.home / ".cache").exists()
+    assert runner.stream_calls == 0
+
+
+def test_sandbox_missing_home(sbx: SandboxEnv, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify an unknown or relative home is a controlled 503."""
+    client, runner = sbx_client(sbx)
+
+    def boom() -> Path:
+        msg = "no home"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(Path, "home", boom)
+    response = client.post("/v1/query", json=SANDBOX_BODY, headers=AUTH)
+    assert response.status_code == 503
+    with pytest.raises(SandboxSetupError, match="unknown"):
+        service_home()
+    monkeypatch.setattr(Path, "home", lambda: Path("relative"))
+    with pytest.raises(SandboxSetupError, match="not absolute"):
+        service_home()
+    assert runner.stream_calls == 0
+
+
+def test_sandbox_missing_bundled_cli(
+    sbx: SandboxEnv,
+) -> None:
+    """Verify a missing or non-executable bundled CLI fails closed."""
+    client, runner = sbx_client(sbx)
+    sbx.cli.chmod(0o644)
+    response = client.post("/v1/query", json=SANDBOX_BODY, headers=AUTH)
+    assert response.status_code == 503
+    assert "bundled Claude CLI" in response.json()["detail"]
+    sbx.cli.unlink()
+    response = client.post("/v1/query/stream", json=SANDBOX_BODY, headers=AUTH)
+    assert response.status_code == 503
+    assert runner.stream_calls == 0
+    assert not sandbox_cache_dir(sbx.home).exists()
+
+
+def test_bundled_cli_path_default_is_real_sdk() -> None:
+    """Verify the real SDK bundles an executable CLI."""
+    assert bundled_cli_path().parent.name == "_bundled"
+
+
+def test_build_options_failure_releases_slot(
+    sbx: SandboxEnv, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify unexpected option-building errors release the slot and propagate."""
+
+    def boom(*_a: object, **_k: object) -> ClaudeAgentOptions:
+        msg = "unexpected"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr("casapi.main.build_options", boom)
+    test_app = create_app(make_settings(sbx.workspace, max_concurrency=1), FakeRunner())
+    client = TestClient(test_app, raise_server_exceptions=False)
+    for _ in range(2):
+        response = client.post("/v1/query", json={"prompt": "x"}, headers=AUTH)
+        assert response.status_code == 500
 
 
 def test_build_sandbox_settings(tmp_path: Path) -> None:
@@ -1463,7 +1839,12 @@ def test_build_sandbox_settings(tmp_path: Path) -> None:
             "allowRead": [str(home / ".config" / "gh"), str(home / ".config" / "uv")],
         },
         "credentials": {
-            "envVars": [{"name": n, "mode": "deny"} for n in SANDBOX_DENIED_ENV_VARS]
+            "envVars": [
+                {"name": "ANTHROPIC_API_KEY", "mode": "deny"},
+                {"name": "CASAPI_API_KEY", "mode": "deny"},
+                {"name": "CLAUDE_CODE_MESSAGING_TOKEN", "mode": "deny"},
+                {"name": "CLAUDE_CODE_OAUTH_TOKEN", "mode": "deny"},
+            ]
         },
     }
     assert "excludedCommands" not in result
