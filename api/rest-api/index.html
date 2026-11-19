@@ -151,15 +151,17 @@ workspace and ordinary CLI bookkeeping under <code>~/.claude</code>.</p>
 </code></pre></div>
 <h2 id="get-v1info"><code>GET /v1/info</code><a class="headerlink" href="#get-v1info" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="p">{</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="nt">"version"</span><span class="p">:</span><span class="w"> </span><span class="s2">"0.2.0"</span><span class="p">,</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="nt">"version"</span><span class="p">:</span><span class="w"> </span><span class="s2">"0.3.0"</span><span class="p">,</span>
 <a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">  </span><span class="nt">"stateless"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
 <a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">  </span><span class="nt">"default_model"</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span>
 <a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">  </span><span class="nt">"workspace_root"</span><span class="p">:</span><span class="w"> </span><span class="s2">"/srv/workspaces"</span><span class="p">,</span>
 <a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">  </span><span class="nt">"default_permission_mode"</span><span class="p">:</span><span class="w"> </span><span class="s2">"acceptEdits"</span><span class="p">,</span>
 <a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">  </span><span class="nt">"default_allowed_tools"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"Read"</span><span class="p">,</span><span class="w"> </span><span class="s2">"Write"</span><span class="p">,</span><span class="w"> </span><span class="s2">"Edit"</span><span class="p">,</span><span class="w"> </span><span class="s2">"Bash"</span><span class="p">,</span><span class="w"> </span><span class="s2">"Glob"</span><span class="p">,</span><span class="w"> </span><span class="s2">"Grep"</span><span class="p">],</span>
 <a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">  </span><span class="nt">"max_concurrency"</span><span class="p">:</span><span class="w"> </span><span class="mi">4</span><span class="p">,</span>
-<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">  </span><span class="nt">"auth_required"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span>
-<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="p">}</span>
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">  </span><span class="nt">"auth_required"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="w">  </span><span class="nt">"sandbox_mode"</span><span class="p">:</span><span class="w"> </span><span class="s2">"off"</span><span class="p">,</span>
+<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="w">  </span><span class="nt">"sandbox_allowed_domains"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"github.com"</span><span class="p">,</span><span class="w"> </span><span class="s2">"api.github.com"</span><span class="p">,</span><span class="w"> </span><span class="s2">"codeload.github.com"</span><span class="p">,</span><span class="w"> </span><span class="s2">"uploads.github.com"</span><span class="p">,</span><span class="w"> </span><span class="s2">"raw.githubusercontent.com"</span><span class="p">,</span><span class="w"> </span><span class="s2">"objects.githubusercontent.com"</span><span class="p">,</span><span class="w"> </span><span class="s2">"release-assets.githubusercontent.com"</span><span class="p">,</span><span class="w"> </span><span class="s2">"pypi.org"</span><span class="p">,</span><span class="w"> </span><span class="s2">"files.pythonhosted.org"</span><span class="p">,</span><span class="w"> </span><span class="s2">"registry.npmjs.org"</span><span class="p">]</span>
+<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="p">}</span>
 </code></pre></div>
 <h2 id="post-v1query"><code>POST /v1/query</code><a class="headerlink" href="#post-v1query" title="Permanent link">&para;</a></h2>
 <p>Request (only <code>prompt</code> is required):</p>
@@ -175,13 +177,25 @@ workspace and ordinary CLI bookkeeping under <code>~/.claude</code>.</p>
 <a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="w">  </span><span class="nt">"max_budget_usd"</span><span class="p">:</span><span class="w"> </span><span class="mf">1.0</span><span class="p">,</span>
 <a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="w">  </span><span class="nt">"effort"</span><span class="p">:</span><span class="w"> </span><span class="s2">"low"</span><span class="p">,</span>
 <a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="w">  </span><span class="nt">"timeout_seconds"</span><span class="p">:</span><span class="w"> </span><span class="mi">300</span><span class="p">,</span>
-<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="w">  </span><span class="nt">"include_messages"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span>
-<a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a><span class="p">}</span>
+<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="w">  </span><span class="nt">"include_messages"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+<a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a><span class="w">  </span><span class="nt">"sandbox"</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span>
+<a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a><span class="p">}</span>
 </code></pre></div>
 <ul>
 <li><code>include_messages</code>: when <code>false</code>, the response omits the transcript (<code>messages</code>
   is <code>[]</code>); intended for result-only clients. It has no effect on
   <code>/v1/query/stream</code>.</li>
+<li><code>sandbox</code>: when <code>true</code>, runs Bash inside the fail-closed CLI sandbox. Requires
+  <code>CASAPI_SANDBOX_MODE=opt-in</code>; otherwise the request is rejected with 403. If
+  the sandbox cannot start the run fails (502, or an error result). Clients must
+  not retry such a failure with <code>sandbox: false</code>. The request is also rejected
+  with 403 if the effective permission mode (request value, else the server
+  default) is <code>auto</code> or <code>bypassPermissions</code> (incompatible with the sandbox's
+  egress allow-list), or if the resolved <code>cwd</code> overlaps the shared cache: it is
+  <code>~/.cache</code>, an ancestor of it (such as the service home directory), or inside
+  <code>~/.cache</code> outside <code>~/.cache/casapi-sandbox</code>. If sandbox prerequisites cannot
+  be established (unknown home, unusable cache directory, missing bundled CLI)
+  the response is 503.</li>
 <li><code>cwd</code>: relative to <code>CASAPI_WORKSPACE_ROOT</code>, or absolute inside it.</li>
 <li><code>system_prompt</code>: when omitted, the run uses the Claude Code preset system
   prompt. Send a string to replace it.</li>
@@ -296,7 +310,7 @@ shutdown can extend beyond it.</p>
 </tr>
 <tr>
 <td>403</td>
-<td><code>cwd</code> outside workspace root; <code>bypassPermissions</code> not enabled</td>
+<td><code>cwd</code> outside workspace root; <code>bypassPermissions</code> not enabled; <code>sandbox: true</code> while <code>CASAPI_SANDBOX_MODE=off</code>, with an egress-expanding permission mode (<code>auto</code>, <code>bypassPermissions</code>), or with a <code>cwd</code> overlapping the shared cache (<code>~/.cache</code> outside <code>~/.cache/casapi-sandbox</code>, or an ancestor such as the home directory)</td>
 </tr>
 <tr>
 <td>422</td>
@@ -304,7 +318,7 @@ shutdown can extend beyond it.</p>
 </tr>
 <tr>
 <td>429</td>
-<td>Concurrency limit reached</td>
+<td>Concurrency limit reached (decided before sandbox setup, so it takes precedence over sandbox-setup 503s)</td>
 </tr>
 <tr>
 <td>502</td>
@@ -312,7 +326,7 @@ shutdown can extend beyond it.</p>
 </tr>
 <tr>
 <td>503</td>
-<td><code>CASAPI_API_KEY</code> not configured and unauthenticated access not allowed</td>
+<td><code>CASAPI_API_KEY</code> not configured and unauthenticated access not allowed; sandbox prerequisites unavailable (home, cache directory or a group/other-writable <code>~/.cache</code>, bundled CLI)</td>
 </tr>
 <tr>
 <td>504</td>

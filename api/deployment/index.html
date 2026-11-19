@@ -171,6 +171,43 @@
 <a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a><span class="k">[Install]</span>
 <a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a><span class="na">WantedBy</span><span class="o">=</span><span class="s">multi-user.target</span>
 </code></pre></div>
+<h3 id="bash-sandbox-optional">Bash sandbox (optional)<a class="headerlink" href="#bash-sandbox-optional" title="Permanent link">&para;</a></h3>
+<p>Runs that send <code>sandbox: true</code> execute Bash inside the Claude CLI sandbox.</p>
+<ul>
+<li>Prerequisites on the host: <code>bwrap</code> (bubblewrap), <code>socat</code>, and <code>rg</code> (ripgrep).</li>
+<li>Sandboxed runs are pinned to the CLI bundled with the installed
+  <code>claude-agent-sdk</code> (<code>cli_path</code>), never any <code>claude</code> on <code>PATH</code>; if the bundled
+  executable is missing or not executable the request fails (503). Its version decides how sandbox settings are
+  interpreted, so redo the probe below after every SDK update.</li>
+<li>Sandboxed requests are rejected (403) when the effective permission mode is
+  <code>auto</code> or <code>bypassPermissions</code>, and when the working directory overlaps
+  <code>~/.cache</code> (for example a workspace root equal to the service home with no
+  <code>cwd</code>). Keep <code>CASAPI_WORKSPACE_ROOT</code> away from the service home, or ensure
+  clients send a <code>cwd</code> below a project directory.</li>
+<li><code>~/.cache/casapi-sandbox</code> is created with mode 0700 on first use; it must be
+  a real directory owned by the service user (symlinks are rejected). Its mode
+  is set to and verified as exactly 0700, and <code>~/.cache</code> itself must not be
+  group- or other-writable; otherwise requests fail with 503.</li>
+<li><code>CASAPI_SANDBOX_MODE</code> accepts exactly <code>off</code> or <code>opt-in</code>; anything else aborts
+  startup.</li>
+<li>The sandbox is fail-closed. On Ubuntu releases that ship the
+  <code>bwrap-userns-restrict</code> AppArmor profile, the sandbox's seccomp helper cannot
+  start, so <code>sandbox: true</code> requests fail until the host policy is adjusted
+  (for example with a dedicated, AppArmor-profiled copy of <code>bwrap</code> placed first
+  on the service <code>PATH</code>). Do not weaken this by disabling the sandbox checks.</li>
+</ul>
+<p>To enable it:</p>
+<ol>
+<li>Set <code>CASAPI_SANDBOX_MODE=opt-in</code> (optionally
+   <code>CASAPI_SANDBOX_ALLOWED_DOMAINS</code>) and restart the service.</li>
+<li>Run an acceptance probe with <code>sandbox: true</code>: <code>echo ok</code> succeeds; writes
+   outside the working directory and the sandbox cache are denied; secret
+   directories such as <code>~/.ssh</code> are unreadable; <code>env</code> shows no
+   <code>CASAPI_API_KEY</code>; <code>curl</code> to a non-allow-listed host is denied; and
+   <code>systemctl --user status</code> fails.</li>
+</ol>
+<p>Clients must never retry a failed <code>sandbox: true</code> request with
+<code>sandbox: false</code>; that would reintroduce fail-open behaviour.</p>
 <h3 id="client-smoke-test">Client smoke test<a class="headerlink" href="#client-smoke-test" title="Permanent link">&para;</a></h3>
 <p>From the client machine (here via an SSH tunnel on <code>localhost:8000</code>):</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>curl<span class="w"> </span>-sS<span class="w"> </span>http://localhost:8000/health
