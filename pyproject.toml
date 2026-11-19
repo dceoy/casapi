@@ -1,6 +1,6 @@
 [project]
 name = "casapi"
-version = "0.3.0"
+version = "0.2.1"
 description = "Stateless HTTP API for remote Claude Code execution powered by Claude Agent SDK"
 authors = [{name = "dceoy", email = "dceoy@users.noreply.github.com"}]
 maintainers = [{name = "dceoy", email = "dceoy@users.noreply.github.com"}]

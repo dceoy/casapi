@@ -32,7 +32,7 @@ No authentication.
 
 ```json
 {
-  "version": "0.3.0",
+  "version": "0.2.1",
   "stateless": true,
   "default_model": null,
   "workspace_root": "/srv/workspaces",
