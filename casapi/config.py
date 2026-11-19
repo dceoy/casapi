@@ -3,11 +3,31 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 _DEFAULT_TOOLS = "Read,Write,Edit,Bash,Glob,Grep"
+
+SandboxMode = Literal["off", "opt-in"]
+_SANDBOX_MODES: tuple[SandboxMode, ...] = ("off", "opt-in")
+DEFAULT_SANDBOX_ALLOWED_DOMAINS: tuple[str, ...] = (
+    "github.com",
+    "api.github.com",
+    "codeload.github.com",
+    "uploads.github.com",
+    "raw.githubusercontent.com",
+    "objects.githubusercontent.com",
+    "release-assets.githubusercontent.com",
+    "pypi.org",
+    "files.pythonhosted.org",
+    "registry.npmjs.org",
+)
+_DOMAIN_RE = re.compile(
+    r"^(\*\.)?[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$"
+)
 
 
 def _env_bool(name: str, *, default: bool = False) -> bool:
@@ -24,6 +44,27 @@ def _env_api_key() -> str | None:
     return raw.strip() or None
 
 
+def _env_sandbox_mode() -> SandboxMode:
+    raw = os.environ.get("CASAPI_SANDBOX_MODE", "off").strip().lower()
+    for mode in _SANDBOX_MODES:
+        if raw == mode:
+            return mode
+    msg = f"CASAPI_SANDBOX_MODE must be one of off, opt-in; got {raw!r}"
+    raise ValueError(msg)
+
+
+def _env_sandbox_domains() -> tuple[str, ...]:
+    raw = os.environ.get("CASAPI_SANDBOX_ALLOWED_DOMAINS")
+    if raw is None:
+        return DEFAULT_SANDBOX_ALLOWED_DOMAINS
+    domains = tuple(d.strip().lower() for d in raw.split(",") if d.strip())
+    for d in domains:
+        if not _DOMAIN_RE.match(d):
+            msg = f"invalid domain in CASAPI_SANDBOX_ALLOWED_DOMAINS: {d!r}"
+            raise ValueError(msg)
+    return domains
+
+
 @dataclass(frozen=True)
 class Settings:
     """Server configuration.
@@ -38,6 +79,9 @@ class Settings:
         allow_bypass_permissions: Permit requests using ``bypassPermissions``.
         max_concurrency: Maximum number of simultaneous agent runs.
         max_timeout_seconds: Upper bound (and default) for run duration.
+        sandbox_mode: ``off`` rejects ``sandbox: true`` requests; ``opt-in`` lets
+            requests enable the Bash sandbox.
+        sandbox_allowed_domains: Network egress allow-list for sandboxed Bash.
     """
 
     api_key: str | None = None
@@ -49,6 +93,8 @@ class Settings:
     allow_bypass_permissions: bool = False
     max_concurrency: int = 4
     max_timeout_seconds: float = 3600.0
+    sandbox_mode: SandboxMode = "off"
+    sandbox_allowed_domains: tuple[str, ...] = DEFAULT_SANDBOX_ALLOWED_DOMAINS
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -72,4 +118,6 @@ class Settings:
             max_timeout_seconds=float(
                 os.environ.get("CASAPI_MAX_TIMEOUT_SECONDS", "3600")
             ),
+            sandbox_mode=_env_sandbox_mode(),
+            sandbox_allowed_domains=_env_sandbox_domains(),
         )

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import re
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from claude_agent_sdk import (
@@ -20,11 +21,11 @@ from claude_agent_sdk import (
     query,
 )
 
+from casapi.sandbox import build_sandbox_settings, sandbox_cache_dir, sandbox_env
 from casapi.schemas import QueryResponse
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
-    from pathlib import Path
 
     from claude_agent_sdk import Message
 
@@ -235,6 +236,11 @@ def build_options(
         "effort": request.effort,
     }
     kwargs.update({k: v for k, v in optional.items() if v is not None})
+    if request.sandbox:
+        home = Path.home()
+        sandbox_cache_dir(home).mkdir(mode=0o700, parents=True, exist_ok=True)
+        kwargs["sandbox"] = build_sandbox_settings(settings, home)
+        kwargs["env"] = {**kwargs["env"], **sandbox_env(home)}
     return ClaudeAgentOptions(**kwargs)
 
 

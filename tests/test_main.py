@@ -28,7 +28,7 @@ from claude_agent_sdk import (
     ToolUseBlock,
     UserMessage,
 )
-from fastapi import Request
+from fastapi import HTTPException, Request
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from starlette.requests import ClientDisconnect
@@ -43,9 +43,16 @@ from casapi.agent import (
     json_safe,
     message_to_dict,
 )
-from casapi.config import Settings
+from casapi.config import DEFAULT_SANDBOX_ALLOWED_DOMAINS, Settings
 from casapi.main import _events, _SlotLease, app, create_app  # pyright: ignore[reportPrivateUsage]
+from casapi.sandbox import (
+    SANDBOX_DENIED_ENV_VARS,
+    build_sandbox_settings,
+    sandbox_cache_dir,
+    sandbox_env,
+)
 from casapi.schemas import QueryRequest
+from casapi.security import check_sandbox_request
 
 if TYPE_CHECKING:
     from collections.abc import (
@@ -344,6 +351,8 @@ def test_validation(tmp_path: Path) -> None:
     )
     stateful = {"prompt": "x", "resume": "abc"}
     assert client.post("/v1/query", json=stateful, headers=AUTH).status_code == 422
+    bad_sandbox = {"prompt": "x", "sandbox": "maybe"}
+    assert client.post("/v1/query", json=bad_sandbox, headers=AUTH).status_code == 422
     too_long = {"prompt": "x", "timeout_seconds": 11}
     assert client.post("/v1/query", json=too_long, headers=AUTH).status_code == 400
 
@@ -517,7 +526,7 @@ def test_info(tmp_path: Path) -> None:
     client, _ = client_for(make_settings(tmp_path, default_model="m1"))
     body = client.get("/v1/info", headers=AUTH).json()
     assert body == {
-        "version": "0.2.0",
+        "version": "0.3.0",
         "stateless": True,
         "default_model": "m1",
         "workspace_root": str(tmp_path.resolve()),
@@ -525,6 +534,8 @@ def test_info(tmp_path: Path) -> None:
         "default_allowed_tools": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
         "max_concurrency": 2,
         "auth_required": True,
+        "sandbox_mode": "off",
+        "sandbox_allowed_domains": list(DEFAULT_SANDBOX_ALLOWED_DOMAINS),
     }
 
 
@@ -540,6 +551,8 @@ def test_settings_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
         "CASAPI_ALLOW_BYPASS_PERMISSIONS",
         "CASAPI_MAX_CONCURRENCY",
         "CASAPI_MAX_TIMEOUT_SECONDS",
+        "CASAPI_SANDBOX_MODE",
+        "CASAPI_SANDBOX_ALLOWED_DOMAINS",
     ):
         monkeypatch.delenv(name, raising=False)
     settings = Settings.from_env()
@@ -552,6 +565,8 @@ def test_settings_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.allow_bypass_permissions is False
     assert settings.max_concurrency == 4
     assert settings.max_timeout_seconds == pytest.approx(3600.0)
+    assert settings.sandbox_mode == "off"
+    assert settings.sandbox_allowed_domains == DEFAULT_SANDBOX_ALLOWED_DOMAINS
     assert Settings().workspace_root == Path.cwd().resolve()
 
 
@@ -566,6 +581,10 @@ def test_settings_from_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
     monkeypatch.setenv("CASAPI_ALLOW_BYPASS_PERMISSIONS", "off")
     monkeypatch.setenv("CASAPI_MAX_CONCURRENCY", "7")
     monkeypatch.setenv("CASAPI_MAX_TIMEOUT_SECONDS", "12.5")
+    monkeypatch.setenv("CASAPI_SANDBOX_MODE", " Opt-In ")
+    monkeypatch.setenv(
+        "CASAPI_SANDBOX_ALLOWED_DOMAINS", " GitHub.com , *.example.org,,"
+    )
     settings = Settings.from_env()
     assert settings.api_key == "k"
     assert settings.allow_unauthenticated is True
@@ -576,6 +595,37 @@ def test_settings_from_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
     assert settings.allow_bypass_permissions is False
     assert settings.max_concurrency == 7
     assert settings.max_timeout_seconds == pytest.approx(12.5)
+    assert settings.sandbox_mode == "opt-in"
+    assert settings.sandbox_allowed_domains == ("github.com", "*.example.org")
+
+
+@pytest.mark.parametrize("value", ["required", "bogus"])
+def test_settings_sandbox_mode_invalid(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    """Verify unknown sandbox modes fail at startup."""
+    monkeypatch.setenv("CASAPI_SANDBOX_MODE", value)
+    with pytest.raises(ValueError, match="CASAPI_SANDBOX_MODE"):
+        Settings.from_env()
+
+
+@pytest.mark.parametrize("value", ["", " , "])
+def test_settings_sandbox_domains_empty(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    """Verify an empty domain list means no egress."""
+    monkeypatch.setenv("CASAPI_SANDBOX_ALLOWED_DOMAINS", value)
+    assert Settings.from_env().sandbox_allowed_domains == ()
+
+
+@pytest.mark.parametrize("value", ["https://github.com", "github.com/x", "localhost"])
+def test_settings_sandbox_domains_invalid(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    """Verify malformed domains fail at startup."""
+    monkeypatch.setenv("CASAPI_SANDBOX_ALLOWED_DOMAINS", value)
+    with pytest.raises(ValueError, match="invalid domain"):
+        Settings.from_env()
 
 
 def test_settings_api_key_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1306,3 +1356,126 @@ async def test_stream_header_send_failure_releases_slot(
     await test_app.state.semaphore.acquire()
     assert test_app.state.semaphore.locked()
     test_app.state.semaphore.release()
+
+
+def test_check_sandbox_request() -> None:
+    """Verify the sandbox request guard."""
+    check_sandbox_request(Settings(), requested=False)
+    with pytest.raises(HTTPException) as exc:
+        check_sandbox_request(Settings(), requested=True)
+    assert exc.value.status_code == 403
+    opt_in = Settings(sandbox_mode="opt-in")
+    check_sandbox_request(opt_in, requested=False)
+    check_sandbox_request(opt_in, requested=True)
+
+
+def test_sandbox_rejected_when_off(tmp_path: Path) -> None:
+    """Verify sandbox requests are rejected when disabled."""
+    client, runner = client_for(make_settings(tmp_path))
+    response = client.post(
+        "/v1/query", json={"prompt": "x", "sandbox": True}, headers=AUTH
+    )
+    assert response.status_code == 403
+    assert response.json() == {
+        "detail": "sandbox is disabled (CASAPI_SANDBOX_MODE=off)"
+    }
+    assert runner.options is None
+
+
+def test_sandbox_stream_rejected_when_off(tmp_path: Path) -> None:
+    """Verify the stream endpoint rejects sandbox requests when disabled."""
+    client, runner = client_for(make_settings(tmp_path))
+    response = client.post(
+        "/v1/query/stream", json={"prompt": "x", "sandbox": True}, headers=AUTH
+    )
+    assert response.status_code == 403
+    assert runner.options is None
+
+
+def test_sandbox_false_when_off(tmp_path: Path) -> None:
+    """Verify an explicit sandbox=false behaves as before."""
+    client, runner = client_for(make_settings(tmp_path))
+    response = client.post(
+        "/v1/query", json={"prompt": "x", "sandbox": False}, headers=AUTH
+    )
+    assert response.status_code == 200
+    assert runner.options is not None
+    assert runner.options.sandbox is None
+
+
+def test_sandbox_opt_in_enabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify an opt-in sandbox request builds sandboxed options."""
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    settings = make_settings(tmp_path, sandbox_mode="opt-in")
+    client, runner = client_for(settings)
+    response = client.post(
+        "/v1/query", json={"prompt": "x", "sandbox": True}, headers=AUTH
+    )
+    assert response.status_code == 200
+    assert runner.options is not None
+    assert runner.options.sandbox == build_sandbox_settings(settings, home)
+    env = runner.options.env
+    assert env["XDG_CACHE_HOME"] == str(sandbox_cache_dir(home))
+    assert env["npm_config_cache"]
+    assert env["npm_config_store_dir"]
+    assert env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] == "1"
+    assert sandbox_cache_dir(home).is_dir()
+
+
+def test_sandbox_opt_in_not_requested(tmp_path: Path) -> None:
+    """Verify opt-in mode does not sandbox unless requested."""
+    client, runner = client_for(make_settings(tmp_path, sandbox_mode="opt-in"))
+    response = client.post("/v1/query", json={"prompt": "x"}, headers=AUTH)
+    assert response.status_code == 200
+    assert runner.options is not None
+    assert runner.options.sandbox is None
+    assert "XDG_CACHE_HOME" not in runner.options.env
+
+
+def test_build_sandbox_settings(tmp_path: Path) -> None:
+    """Verify the sandbox settings dict exactly."""
+    home = tmp_path / "h"
+    settings = Settings(sandbox_allowed_domains=("github.com",))
+    result = build_sandbox_settings(settings, home)
+    assert result == {
+        "enabled": True,
+        "failIfUnavailable": True,
+        "autoAllowBashIfSandboxed": False,
+        "allowUnsandboxedCommands": False,
+        "enableWeakerNestedSandbox": False,
+        "network": {"allowedDomains": ["github.com"], "allowAllUnixSockets": False},
+        "filesystem": {
+            "allowWrite": [str(home / ".cache" / "casapi-sandbox")],
+            "denyRead": [
+                str(home / ".ssh"),
+                str(home / ".gnupg"),
+                str(home / ".aws"),
+                str(home / ".config"),
+                str(home / ".claude.json"),
+                str(home / ".claude" / ".credentials.json"),
+                str(home / "Dropbox"),
+                "/run/user",
+                "/run/dbus",
+            ],
+            "allowRead": [str(home / ".config" / "gh"), str(home / ".config" / "uv")],
+        },
+        "credentials": {
+            "envVars": [{"name": n, "mode": "deny"} for n in SANDBOX_DENIED_ENV_VARS]
+        },
+    }
+    assert "excludedCommands" not in result
+    assert result["failIfUnavailable"] is True
+    assert result["allowUnsandboxedCommands"] is False
+
+
+def test_sandbox_env(tmp_path: Path) -> None:
+    """Verify cache redirection environment."""
+    cache = tmp_path / ".cache" / "casapi-sandbox"
+    assert sandbox_env(tmp_path) == {
+        "XDG_CACHE_HOME": str(cache),
+        "npm_config_cache": str(cache / "npm"),
+        "npm_config_store_dir": str(cache / "pnpm-store"),
+    }

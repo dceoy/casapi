@@ -23,7 +23,12 @@ from casapi.agent import (
 )
 from casapi.config import Settings
 from casapi.schemas import InfoResponse, QueryRequest, QueryResponse
-from casapi.security import auth_dependency, check_permission_mode, resolve_cwd
+from casapi.security import (
+    auth_dependency,
+    check_permission_mode,
+    check_sandbox_request,
+    resolve_cwd,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, AsyncIterator
@@ -33,7 +38,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 DISCONNECT_POLL_INTERVAL = 0.1
 HEARTBEAT_INTERVAL = 15.0
 
@@ -57,6 +62,7 @@ async def _prepare(
     settings: Settings = request.app.state.settings
     cwd = resolve_cwd(settings, body.cwd)
     check_permission_mode(settings, body.permission_mode)
+    check_sandbox_request(settings, body.sandbox)
     timeout = (
         settings.max_timeout_seconds
         if body.timeout_seconds is None
@@ -233,6 +239,8 @@ def _add_meta_routes(app: FastAPI, settings: Settings) -> None:
             default_allowed_tools=list(settings.allowed_tools),
             max_concurrency=settings.max_concurrency,
             auth_required=bool(settings.api_key and settings.api_key.strip()),
+            sandbox_mode=settings.sandbox_mode,
+            sandbox_allowed_domains=list(settings.sandbox_allowed_domains),
         )
 
     _ = (health, info)

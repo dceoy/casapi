@@ -60,6 +60,33 @@ NoNewPrivileges=true
 WantedBy=multi-user.target
 ```
 
+### Bash sandbox (optional)
+
+Runs that send `sandbox: true` execute Bash inside the Claude CLI sandbox.
+
+- Prerequisites on the host: `bwrap` (bubblewrap), `socat`, and `rg` (ripgrep).
+- The CLI used is the one bundled with the installed `claude-agent-sdk`, not
+  any `claude` on `PATH`. Its version decides how sandbox settings are
+  interpreted, so redo the probe below after every SDK update.
+- The sandbox is fail-closed. On Ubuntu releases that ship the
+  `bwrap-userns-restrict` AppArmor profile, the sandbox's seccomp helper cannot
+  start, so `sandbox: true` requests fail until the host policy is adjusted
+  (for example with a dedicated, AppArmor-profiled copy of `bwrap` placed first
+  on the service `PATH`). Do not weaken this by disabling the sandbox checks.
+
+To enable it:
+
+1. Set `CASAPI_SANDBOX_MODE=opt-in` (optionally
+   `CASAPI_SANDBOX_ALLOWED_DOMAINS`) and restart the service.
+2. Run an acceptance probe with `sandbox: true`: `echo ok` succeeds; writes
+   outside the working directory and the sandbox cache are denied; secret
+   directories such as `~/.ssh` are unreadable; `env` shows no
+   `CASAPI_API_KEY`; `curl` to a non-allow-listed host is denied; and
+   `systemctl --user status` fails.
+
+Clients must never retry a failed `sandbox: true` request with
+`sandbox: false`; that would reintroduce fail-open behaviour.
+
 ### Client smoke test
 
 From the client machine (here via an SSH tunnel on `localhost:8000`):

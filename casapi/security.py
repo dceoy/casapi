@@ -92,6 +92,23 @@ def resolve_cwd(settings: Settings, cwd: str | None) -> Path:
     return resolved
 
 
+def check_sandbox_request(settings: Settings, requested: bool) -> None:
+    """Reject sandboxed runs unless the operator enabled the sandbox.
+
+    Args:
+        settings: Server settings.
+        requested: Whether the request asked for the Bash sandbox.
+
+    Raises:
+        HTTPException: 403 if the sandbox is requested while disabled.
+    """
+    if requested and settings.sandbox_mode == "off":
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "sandbox is disabled (CASAPI_SANDBOX_MODE=off)",
+        )
+
+
 def check_permission_mode(settings: Settings, requested: str | None) -> str:
     """Reject ``bypassPermissions`` unless explicitly enabled.
 
