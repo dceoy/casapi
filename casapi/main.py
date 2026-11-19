@@ -66,12 +66,14 @@ async def _prepare(
     check_permission_mode(settings, body.permission_mode)
     check_sandbox_request(settings, body.sandbox, body.permission_mode)
     home = None
+    home_error: SandboxSetupError | None = None
     if body.sandbox:
         try:
             home = service_home()
         except SandboxSetupError as exc:
-            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
-        check_sandbox_cwd(cwd, home)
+            home_error = exc  # 503 is deferred so that 429 takes precedence
+        else:
+            check_sandbox_cwd(cwd, home)
     timeout = (
         settings.max_timeout_seconds
         if body.timeout_seconds is None
@@ -87,6 +89,10 @@ async def _prepare(
         raise HTTPException(
             status.HTTP_429_TOO_MANY_REQUESTS, "agent concurrency limit reached"
         )
+    if home_error is not None:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, str(home_error)
+        ) from home_error
     await semaphore.acquire()  # immediate: not locked, so no suspension
     try:
         options = build_options(body, settings, cwd, home)

@@ -75,8 +75,9 @@ Runs that send `sandbox: true` execute Bash inside the Claude CLI sandbox.
   `cwd`). Keep `CASAPI_WORKSPACE_ROOT` away from the service home, or ensure
   clients send a `cwd` below a project directory.
 - `~/.cache/casapi-sandbox` is created with mode 0700 on first use; it must be
-  a real directory owned by the service user (symlinks are rejected, broader
-  modes are tightened).
+  a real directory owned by the service user (symlinks are rejected). Its mode
+  is set to and verified as exactly 0700, and `~/.cache` itself must not be
+  group- or other-writable; otherwise requests fail with 503.
 - `CASAPI_SANDBOX_MODE` accepts exactly `off` or `opt-in`; anything else aborts
   startup.
 - The sandbox is fail-closed. On Ubuntu releases that ship the

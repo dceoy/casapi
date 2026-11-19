@@ -75,12 +75,14 @@ def _env_sandbox_domains() -> tuple[str, ...]:
     raw = os.environ.get("CASAPI_SANDBOX_ALLOWED_DOMAINS")
     if raw is None:
         return DEFAULT_SANDBOX_ALLOWED_DOMAINS
-    domains = tuple(d.strip().lower() for d in raw.split(",") if d.strip())
-    for d in domains:
-        if not _valid_domain(d):
+    entries = [d.strip() for d in raw.split(",") if d.strip()]
+    for d in entries:
+        # Validate as ASCII before lowercasing: casefolding can map Unicode
+        # (e.g. the Kelvin sign) onto ASCII letters.
+        if not d.isascii() or not _valid_domain(d.lower()):
             msg = f"invalid domain in CASAPI_SANDBOX_ALLOWED_DOMAINS: {d!r}"
             raise ValueError(msg)
-    return domains
+    return tuple(d.lower() for d in entries)
 
 
 @dataclass(frozen=True)

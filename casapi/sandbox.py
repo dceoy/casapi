@@ -25,6 +25,8 @@ SANDBOX_DENIED_ENV_VARS = (
 )
 
 
+_CACHE_MODE = 0o700
+
 _SDK_DIR = Path(claude_agent_sdk.__file__).parent
 
 
@@ -95,16 +97,29 @@ def _ensure_dir(path: Path) -> None:
 
 
 def _tighten(path: Path) -> None:
-    """Restrict ``path`` to 0o700 or fail closed.
+    """Make ``path`` exactly 0o700 or fail closed.
 
     Raises:
-        SandboxSetupError: If group/other permissions remain.
+        SandboxSetupError: If the mode is not exactly 0o700 after tightening.
     """
-    if stat.S_IMODE(path.lstat().st_mode) & 0o077:
-        path.chmod(0o700)
-        if stat.S_IMODE(path.lstat().st_mode) & 0o077:
-            msg = "sandbox unavailable: cache directory permissions too broad"
+    if stat.S_IMODE(path.lstat().st_mode) != _CACHE_MODE:
+        path.chmod(_CACHE_MODE)
+        if stat.S_IMODE(path.lstat().st_mode) != _CACHE_MODE:
+            msg = (
+                "sandbox unavailable: cache directory permissions cannot be set to 0700"
+            )
             raise SandboxSetupError(msg)
+
+
+def _check_parent_not_writable(parent: Path) -> None:
+    """Reject a group/other-writable parent, where the leaf could be replaced.
+
+    Raises:
+        SandboxSetupError: If group or other write bits are set.
+    """
+    if stat.S_IMODE(parent.lstat().st_mode) & 0o022:
+        msg = "sandbox unavailable: cache parent directory is group or other writable"
+        raise SandboxSetupError(msg)
 
 
 def prepare_sandbox_cache(home: Path) -> Path:
@@ -112,7 +127,8 @@ def prepare_sandbox_cache(home: Path) -> Path:
 
     The parent ``~/.cache`` and the leaf must be real directories (symlinks are
     not followed) owned by the current user. A leaf with group/other
-    permissions is tightened to 0o700.
+    permissions is set to exactly 0o700 and verified. A group/other-writable
+    parent is rejected.
 
     Args:
         home: Absolute home directory of the server user.
@@ -126,6 +142,7 @@ def prepare_sandbox_cache(home: Path) -> Path:
     cache = sandbox_cache_dir(home)
     try:
         _ensure_dir(cache.parent)
+        _check_parent_not_writable(cache.parent)
         _ensure_dir(cache)
         _tighten(cache)
     except OSError as exc:

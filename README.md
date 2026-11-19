@@ -75,7 +75,8 @@ empty or blank list means no egress). Each entry must be an ASCII hostname with
 at least two DNS labels, each 1-63 characters (letters, digits, inner hyphens),
 and at most 253 characters in total. A single leading `*.` wildcard is allowed;
 embedded wildcards, empty labels (`a..com`), trailing dots, and raw Unicode
-names (use punycode, `xn--...`) abort startup.
+names (use punycode, `xn--...`) abort startup. Entries are checked as ASCII
+before lowercasing, so look-alike characters such as the Kelvin sign are rejected.
 
 ## Security model
 

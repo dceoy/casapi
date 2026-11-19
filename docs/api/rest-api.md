@@ -198,9 +198,9 @@ shutdown can extend beyond it.
 | 401    | Missing or incorrect bearer token                                      |
 | 403    | `cwd` outside workspace root; `bypassPermissions` not enabled; `sandbox: true` while `CASAPI_SANDBOX_MODE=off`, with an egress-expanding permission mode (`auto`, `bypassPermissions`), or with a `cwd` overlapping the shared cache (`~/.cache` outside `~/.cache/casapi-sandbox`, or an ancestor such as the home directory) |
 | 422    | Invalid body (empty prompt, unknown/stateful fields, bad ranges)       |
-| 429    | Concurrency limit reached                                              |
+| 429    | Concurrency limit reached (decided before sandbox setup, so it takes precedence over sandbox-setup 503s) |
 | 502    | SDK/CLI failure, or the run ended without a result message             |
-| 503    | `CASAPI_API_KEY` not configured and unauthenticated access not allowed; sandbox prerequisites unavailable (home, cache directory, bundled CLI) |
+| 503    | `CASAPI_API_KEY` not configured and unauthenticated access not allowed; sandbox prerequisites unavailable (home, cache directory or a group/other-writable `~/.cache`, bundled CLI) |
 | 504    | Run exceeded its timeout                                               |
 
 Errors use FastAPI's `{"detail": "..."}` body.

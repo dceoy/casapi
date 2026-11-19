@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import gc
 import json
+import os
 from contextlib import suppress
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -64,6 +65,7 @@ if TYPE_CHECKING:
         Awaitable,
         Callable,
         Coroutine,
+        Iterator,
         MutableMapping,
     )
 
@@ -686,6 +688,9 @@ def test_settings_sandbox_domains_normalization(
         "-a.com",
         "a-.com",
         "bücher.example",  # raw Unicode (needs punycode)
+        "\u212a.example",  # Kelvin sign U+212A would casefold to ASCII "k"
+        "\u017f.example",  # long s U+017F would casefold to ASCII "s"
+        "\u0130.example",  # dotted capital I
         "a" * 64 + ".com",  # label too long
         ".".join(["a" * 63, "a" * 63, "a" * 63, "a" * 62]),  # 254 chars
     ],
@@ -1439,12 +1444,13 @@ class SandboxEnv:
 
 
 @pytest.fixture
-def sbx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SandboxEnv:
+def sbx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[SandboxEnv]:
     """Provide a service home, a separate workspace, and a fake bundled CLI.
 
-    Returns:
+    Yields:
         The isolated environment.
     """
+    previous_umask = os.umask(0o022)  # deterministic modes for test directories
     home = tmp_path / "home"
     workspace = tmp_path / "ws"
     home.mkdir()
@@ -1456,7 +1462,8 @@ def sbx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SandboxEnv:
     cli.chmod(0o755)
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setattr("casapi.sandbox._SDK_DIR", sdk)
-    return SandboxEnv(home, workspace, cli)
+    yield SandboxEnv(home, workspace, cli)
+    os.umask(previous_umask)
 
 
 def sbx_client(
@@ -1688,8 +1695,64 @@ def test_sandbox_cache_chmod_ineffective(
         assert mode == 0o700
 
     monkeypatch.setattr(Path, "chmod", no_chmod)
-    with pytest.raises(SandboxSetupError, match="too broad"):
+    with pytest.raises(SandboxSetupError, match="cannot be set"):
         prepare_sandbox_cache(sbx.home)
+
+
+def test_sandbox_cache_leaf_0500_corrected(sbx: SandboxEnv) -> None:
+    """Verify a leaf the owner cannot write is corrected to exactly 0700."""
+    cache = sandbox_cache_dir(sbx.home)
+    cache.mkdir(parents=True)
+    cache.chmod(0o500)
+    assert prepare_sandbox_cache(sbx.home) == cache
+    assert cache.stat().st_mode & 0o777 == 0o700
+
+
+def test_sandbox_cache_leaf_0500_uncorrectable(
+    sbx: SandboxEnv, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify an unusable leaf that cannot be corrected is a 503 error."""
+    cache = sandbox_cache_dir(sbx.home)
+    cache.mkdir(parents=True)
+    cache.chmod(0o500)
+
+    def no_chmod(self: Path, mode: int) -> None:
+        """Ignore the chmod request."""
+
+    monkeypatch.setattr(Path, "chmod", no_chmod)
+    with pytest.raises(SandboxSetupError, match="cannot be set"):
+        prepare_sandbox_cache(sbx.home)
+
+
+@pytest.mark.parametrize("mode", [0o777, 0o775, 0o757, 0o770, 0o722])
+def test_sandbox_cache_parent_writable_rejected(sbx: SandboxEnv, mode: int) -> None:
+    """Verify a group/other-writable ~/.cache is rejected before the leaf."""
+    parent = sbx.home / ".cache"
+    parent.mkdir()
+    parent.chmod(mode)
+    with pytest.raises(SandboxSetupError, match="writable"):
+        prepare_sandbox_cache(sbx.home)
+    assert not (parent / "casapi-sandbox").exists()
+
+
+def test_sandbox_cache_parent_0755_accepted(sbx: SandboxEnv) -> None:
+    """Verify a conventional 0755 parent passes."""
+    parent = sbx.home / ".cache"
+    parent.mkdir()
+    parent.chmod(0o755)
+    assert prepare_sandbox_cache(sbx.home) == parent / "casapi-sandbox"
+
+
+def test_sandbox_parent_writable_is_503(sbx: SandboxEnv) -> None:
+    """Verify a writable cache parent yields a 503 on both routes."""
+    parent = sbx.home / ".cache"
+    parent.mkdir()
+    parent.chmod(0o777)
+    client, runner = sbx_client(sbx)
+    for path in ("/v1/query", "/v1/query/stream"):
+        response = client.post(path, json=SANDBOX_BODY, headers=AUTH)
+        assert response.status_code == 503
+    assert runner.stream_calls == 0
 
 
 def test_sandbox_cache_symlink_leaf(sbx: SandboxEnv) -> None:
@@ -1751,6 +1814,26 @@ def test_sandbox_capacity_checked_before_setup(sbx: SandboxEnv) -> None:
     response = client.post("/v1/query", json=SANDBOX_BODY, headers=AUTH)
     assert response.status_code == 429
     assert not (sbx.home / ".cache").exists()
+    assert runner.stream_calls == 0
+
+
+@pytest.mark.parametrize("path", ["/v1/query", "/v1/query/stream"])
+def test_sandbox_429_beats_unavailable_home(
+    sbx: SandboxEnv, monkeypatch: pytest.MonkeyPatch, path: str
+) -> None:
+    """Verify a saturated request gets 429 even when the home is unavailable."""
+    runner = FakeRunner()
+    test_app = create_app(make_settings(sbx.workspace, sandbox_mode="opt-in"), runner)
+    test_app.state.semaphore = asyncio.Semaphore(0)
+    client = TestClient(test_app)
+
+    def boom() -> Path:
+        msg = "no home"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(Path, "home", boom)
+    response = client.post(path, json=SANDBOX_BODY, headers=AUTH)
+    assert response.status_code == 429
     assert runner.stream_calls == 0
 
 
