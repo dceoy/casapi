@@ -60,6 +60,45 @@ NoNewPrivileges=true
 WantedBy=multi-user.target
 ```
 
+### Bash sandbox (optional)
+
+Runs that send `sandbox: true` execute Bash inside the Claude CLI sandbox.
+
+- Prerequisites on the host: `bwrap` (bubblewrap), `socat`, and `rg` (ripgrep).
+- Sandboxed runs are pinned to the CLI bundled with the installed
+  `claude-agent-sdk` (`cli_path`), never any `claude` on `PATH`; if the bundled
+  executable is missing or not executable the request fails (503). Its version decides how sandbox settings are
+  interpreted, so redo the probe below after every SDK update.
+- Sandboxed requests are rejected (403) when the effective permission mode is
+  `auto` or `bypassPermissions`, and when the working directory overlaps
+  `~/.cache` (for example a workspace root equal to the service home with no
+  `cwd`). Keep `CASAPI_WORKSPACE_ROOT` away from the service home, or ensure
+  clients send a `cwd` below a project directory.
+- `~/.cache/casapi-sandbox` is created with mode 0700 on first use; it must be
+  a real directory owned by the service user (symlinks are rejected). Its mode
+  is set to and verified as exactly 0700, and `~/.cache` itself must not be
+  group- or other-writable; otherwise requests fail with 503.
+- `CASAPI_SANDBOX_MODE` accepts exactly `off` or `opt-in`; anything else aborts
+  startup.
+- The sandbox is fail-closed. On Ubuntu releases that ship the
+  `bwrap-userns-restrict` AppArmor profile, the sandbox's seccomp helper cannot
+  start, so `sandbox: true` requests fail until the host policy is adjusted
+  (for example with a dedicated, AppArmor-profiled copy of `bwrap` placed first
+  on the service `PATH`). Do not weaken this by disabling the sandbox checks.
+
+To enable it:
+
+1. Set `CASAPI_SANDBOX_MODE=opt-in` (optionally
+   `CASAPI_SANDBOX_ALLOWED_DOMAINS`) and restart the service.
+2. Run an acceptance probe with `sandbox: true`: `echo ok` succeeds; writes
+   outside the working directory and the sandbox cache are denied; secret
+   directories such as `~/.ssh` are unreadable; `env` shows no
+   `CASAPI_API_KEY`; `curl` to a non-allow-listed host is denied; and
+   `systemctl --user status` fails.
+
+Clients must never retry a failed `sandbox: true` request with
+`sandbox: false`; that would reintroduce fail-open behaviour.
+
 ### Client smoke test
 
 From the client machine (here via an SSH tunnel on `localhost:8000`):

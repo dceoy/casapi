@@ -32,14 +32,16 @@ No authentication.
 
 ```json
 {
-  "version": "0.2.0",
+  "version": "0.3.0",
   "stateless": true,
   "default_model": null,
   "workspace_root": "/srv/workspaces",
   "default_permission_mode": "acceptEdits",
   "default_allowed_tools": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
   "max_concurrency": 4,
-  "auth_required": true
+  "auth_required": true,
+  "sandbox_mode": "off",
+  "sandbox_allowed_domains": ["github.com", "api.github.com", "codeload.github.com", "uploads.github.com", "raw.githubusercontent.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com", "pypi.org", "files.pythonhosted.org", "registry.npmjs.org"]
 }
 ```
 
@@ -60,13 +62,25 @@ Request (only `prompt` is required):
   "max_budget_usd": 1.0,
   "effort": "low",
   "timeout_seconds": 300,
-  "include_messages": true
+  "include_messages": true,
+  "sandbox": false
 }
 ```
 
 - `include_messages`: when `false`, the response omits the transcript (`messages`
   is `[]`); intended for result-only clients. It has no effect on
   `/v1/query/stream`.
+- `sandbox`: when `true`, runs Bash inside the fail-closed CLI sandbox. Requires
+  `CASAPI_SANDBOX_MODE=opt-in`; otherwise the request is rejected with 403. If
+  the sandbox cannot start the run fails (502, or an error result). Clients must
+  not retry such a failure with `sandbox: false`. The request is also rejected
+  with 403 if the effective permission mode (request value, else the server
+  default) is `auto` or `bypassPermissions` (incompatible with the sandbox's
+  egress allow-list), or if the resolved `cwd` overlaps the shared cache: it is
+  `~/.cache`, an ancestor of it (such as the service home directory), or inside
+  `~/.cache` outside `~/.cache/casapi-sandbox`. If sandbox prerequisites cannot
+  be established (unknown home, unusable cache directory, missing bundled CLI)
+  the response is 503.
 - `cwd`: relative to `CASAPI_WORKSPACE_ROOT`, or absolute inside it.
 - `system_prompt`: when omitted, the run uses the Claude Code preset system
   prompt. Send a string to replace it.
@@ -182,11 +196,11 @@ shutdown can extend beyond it.
 | ------ | ---------------------------------------------------------------------- |
 | 400    | `cwd` missing or not a directory; `timeout_seconds` above server max   |
 | 401    | Missing or incorrect bearer token                                      |
-| 403    | `cwd` outside workspace root; `bypassPermissions` not enabled          |
+| 403    | `cwd` outside workspace root; `bypassPermissions` not enabled; `sandbox: true` while `CASAPI_SANDBOX_MODE=off`, with an egress-expanding permission mode (`auto`, `bypassPermissions`), or with a `cwd` overlapping the shared cache (`~/.cache` outside `~/.cache/casapi-sandbox`, or an ancestor such as the home directory) |
 | 422    | Invalid body (empty prompt, unknown/stateful fields, bad ranges)       |
-| 429    | Concurrency limit reached                                              |
+| 429    | Concurrency limit reached (decided before sandbox setup, so it takes precedence over sandbox-setup 503s) |
 | 502    | SDK/CLI failure, or the run ended without a result message             |
-| 503    | `CASAPI_API_KEY` not configured and unauthenticated access not allowed |
+| 503    | `CASAPI_API_KEY` not configured and unauthenticated access not allowed; sandbox prerequisites unavailable (home, cache directory or a group/other-writable `~/.cache`, bundled CLI) |
 | 504    | Run exceeded its timeout                                               |
 
 Errors use FastAPI's `{"detail": "..."}` body.

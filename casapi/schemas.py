@@ -27,6 +27,7 @@ class QueryRequest(BaseModel):
     effort: EffortLevel | None = None
     timeout_seconds: float | None = Field(default=None, gt=0)
     include_messages: bool = True
+    sandbox: bool = False
 
 
 class QueryResponse(BaseModel):
@@ -57,3 +58,5 @@ class InfoResponse(BaseModel):
     default_allowed_tools: list[str]
     max_concurrency: int
     auth_required: bool
+    sandbox_mode: str
+    sandbox_allowed_domains: list[str]

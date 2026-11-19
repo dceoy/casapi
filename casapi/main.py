@@ -22,8 +22,15 @@ from casapi.agent import (
     message_to_dict,
 )
 from casapi.config import Settings
+from casapi.sandbox import SandboxSetupError, service_home
 from casapi.schemas import InfoResponse, QueryRequest, QueryResponse
-from casapi.security import auth_dependency, check_permission_mode, resolve_cwd
+from casapi.security import (
+    auth_dependency,
+    check_permission_mode,
+    check_sandbox_cwd,
+    check_sandbox_request,
+    resolve_cwd,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, AsyncIterator
@@ -33,7 +40,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 DISCONNECT_POLL_INTERVAL = 0.1
 HEARTBEAT_INTERVAL = 15.0
 
@@ -57,6 +64,16 @@ async def _prepare(
     settings: Settings = request.app.state.settings
     cwd = resolve_cwd(settings, body.cwd)
     check_permission_mode(settings, body.permission_mode)
+    check_sandbox_request(settings, body.sandbox, body.permission_mode)
+    home = None
+    home_error: SandboxSetupError | None = None
+    if body.sandbox:
+        try:
+            home = service_home()
+        except SandboxSetupError as exc:
+            home_error = exc  # 503 is deferred so that 429 takes precedence
+        else:
+            check_sandbox_cwd(cwd, home)
     timeout = (
         settings.max_timeout_seconds
         if body.timeout_seconds is None
@@ -67,13 +84,23 @@ async def _prepare(
             status.HTTP_400_BAD_REQUEST,
             f"timeout_seconds exceeds server maximum {settings.max_timeout_seconds}",
         )
-    options = build_options(body, settings, cwd)
     semaphore: asyncio.Semaphore = request.app.state.semaphore
     if semaphore.locked():
         raise HTTPException(
             status.HTTP_429_TOO_MANY_REQUESTS, "agent concurrency limit reached"
         )
+    if home_error is not None:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, str(home_error)
+        ) from home_error
     await semaphore.acquire()  # immediate: not locked, so no suspension
+    try:
+        options = build_options(body, settings, cwd, home)
+    except BaseException as exc:
+        semaphore.release()
+        if isinstance(exc, SandboxSetupError):
+            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
+        raise
     return options, timeout, semaphore
 
 
@@ -233,6 +260,8 @@ def _add_meta_routes(app: FastAPI, settings: Settings) -> None:
             default_allowed_tools=list(settings.allowed_tools),
             max_concurrency=settings.max_concurrency,
             auth_required=bool(settings.api_key and settings.api_key.strip()),
+            sandbox_mode=settings.sandbox_mode,
+            sandbox_allowed_domains=list(settings.sandbox_allowed_domains),
         )
 
     _ = (health, info)
